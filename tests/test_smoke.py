@@ -1,4 +1,4 @@
-from main import main
+from main import APP_NAME, APP_VERSION, main
 
 
 def test_main_runs(capsys):
@@ -6,4 +6,6 @@ def test_main_runs(capsys):
 
     captured = capsys.readouterr()
 
-    assert "Fantasy Football AI Manager setup is working." in captured.out
+    assert APP_NAME in captured.out
+    assert APP_VERSION in captured.out
+    assert "ready for local development" in captured.out
