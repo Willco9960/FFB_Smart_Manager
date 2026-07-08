@@ -37,6 +37,17 @@ def test_get_player_fields_from_historical_row():
     assert get_player_team(row) == "ATL"
 
 
+def test_get_player_team_falls_back_to_team_column():
+    row = {
+        "player_name": "Test Player",
+        "position": "RB",
+        "recent_team": "None",
+        "team": "IND",
+    }
+
+    assert get_player_team(row) == "IND"
+
+
 def test_create_player_from_historical_row_uses_actual_fantasy_points():
     row = {
         "player_name": "Test RB",

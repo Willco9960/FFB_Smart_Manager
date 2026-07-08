@@ -23,7 +23,15 @@ def get_player_position(row: dict[str, str]) -> str:
 
 
 def get_player_team(row: dict[str, str]) -> str:
-    return row.get("recent_team", "")
+    team = row.get("recent_team", "")
+
+    if team in ("", "None"):
+        team = row.get("team", "")
+
+    if team in ("", "None"):
+        team = row.get("posteam", "")
+
+    return team
 
 
 def create_player_from_historical_row(
