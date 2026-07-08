@@ -12,8 +12,7 @@ class DraftAgent(Protocol):
         available_players: list[Player],
         team: Team,
         league: League,
-    ) -> Player:
-        pass
+    ) -> Player: ...
 
 
 @dataclass
