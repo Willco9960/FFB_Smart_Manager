@@ -12,3 +12,5 @@ def test_main_runs(capsys):
     assert "Fake player pool loaded: 188 players" in captured.out
     assert "Draft completed: 160 picks" in captured.out
     assert "Draft agent: RandomDraftAgent" in captured.out
+    assert "Final team scores:" in captured.out
+    assert "Winner:" in captured.out
