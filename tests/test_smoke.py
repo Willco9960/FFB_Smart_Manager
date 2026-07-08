@@ -9,3 +9,4 @@ def test_main_runs(capsys):
     assert APP_NAME in captured.out
     assert APP_VERSION in captured.out
     assert "ready for local development" in captured.out
+    assert "Fake player pool loaded: 188 players" in captured.out
