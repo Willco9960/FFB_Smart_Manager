@@ -1,8 +1,19 @@
 from dataclasses import dataclass
+from typing import Protocol
 
 from fantasy_engine.league import League
 from fantasy_engine.player import Player
 from fantasy_engine.team import Team
+
+
+class DraftAgent(Protocol):
+    def choose_player(
+        self,
+        available_players: list[Player],
+        team: Team,
+        league: League,
+    ) -> Player:
+        pass
 
 
 @dataclass
@@ -24,7 +35,11 @@ def select_best_available_player(available_players: list[Player]) -> Player:
     return max(available_players, key=lambda player: player.projected_score)
 
 
-def run_snake_draft(league: League, rounds: int = 16) -> list[DraftPick]:
+def run_snake_draft(
+    league: League,
+    rounds: int = 16,
+    draft_agent: DraftAgent | None = None,
+) -> list[DraftPick]:
     draft_results = []
     pick_number = 1
 
@@ -32,7 +47,14 @@ def run_snake_draft(league: League, rounds: int = 16) -> list[DraftPick]:
         draft_order = get_snake_draft_order(league.teams, round_number)
 
         for team in draft_order:
-            selected_player = select_best_available_player(league.available_players)
+            if draft_agent is None:
+                selected_player = select_best_available_player(league.available_players)
+            else:
+                selected_player = draft_agent.choose_player(
+                    available_players=league.available_players,
+                    team=team,
+                    league=league,
+                )
 
             team.add_player(selected_player)
             league.available_players.remove(selected_player)
