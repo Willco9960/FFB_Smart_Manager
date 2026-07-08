@@ -8,3 +8,10 @@ Activate the virtual environment, then run:
 
 ```powershell
 python main.py
+
+## Historical data processing
+
+To rebuild the cleaned 2021 processed Parquet cache:
+
+```powershell
+python -m scripts.rebuild_2021_processed_season
