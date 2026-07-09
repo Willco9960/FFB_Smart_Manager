@@ -1,10 +1,17 @@
+import random
+
 from agents.genome_draft_agent import GenomeDraftAgent
 from evolution.population import (
+    clamp_weight,
     clone_league_for_agent,
     create_agent_population,
+    create_next_generation,
     evaluate_agent,
     evaluate_population,
+    mutate_genome,
+    mutate_weight,
     rank_evaluated_agents,
+    select_top_genomes,
 )
 from fantasy_engine.fake_data import create_fake_player_pool
 from fantasy_engine.league import League
@@ -111,3 +118,110 @@ def test_rank_evaluated_agents_sorts_best_to_worst():
     ranked_agents = rank_evaluated_agents(evaluated_agents)
 
     assert ranked_agents[0].fitness_score >= ranked_agents[-1].fitness_score
+
+
+def test_select_top_genomes_returns_best_genomes():
+    league = create_test_league()
+    agents = create_agent_population(population_size=5, seed=1)
+    evaluated_agents = evaluate_population(
+        agents=agents,
+        league=league,
+        rounds=16,
+    )
+
+    selected_genomes = select_top_genomes(
+        evaluated_agents=evaluated_agents,
+        selection_count=2,
+    )
+
+    ranked_agents = rank_evaluated_agents(evaluated_agents)
+
+    assert len(selected_genomes) == 2
+    assert selected_genomes[0] == ranked_agents[0].genome
+    assert selected_genomes[1] == ranked_agents[1].genome
+
+
+def test_clamp_weight_keeps_value_inside_genome_range():
+    low_value = clamp_weight("qb_priority", -1.0)
+    high_value = clamp_weight("qb_priority", 99.0)
+
+    assert low_value == 0.0
+    assert high_value == 0.35
+
+
+def test_mutate_weight_changes_weight_within_safe_range():
+    rng = random.Random(42)
+
+    mutated_weight = mutate_weight(
+        weight_name="rb_priority",
+        current_value=0.6,
+        rng=rng,
+        mutation_strength=0.1,
+    )
+
+    assert 0.35 <= mutated_weight <= 1.0
+    assert mutated_weight != 0.6
+
+
+def test_mutate_genome_changes_at_least_one_weight():
+    rng = random.Random(42)
+    genome = create_agent_population(population_size=1, seed=1)[0].genome
+
+    mutated_genome = mutate_genome(
+        genome=genome,
+        rng=rng,
+        mutation_strength=0.1,
+    )
+
+    assert mutated_genome != genome
+
+
+def test_mutate_genome_keeps_weights_inside_safe_ranges():
+    rng = random.Random(42)
+    genome = create_agent_population(population_size=1, seed=1)[0].genome
+
+    mutated_genome = mutate_genome(
+        genome=genome,
+        rng=rng,
+        mutation_strength=10.0,
+    )
+
+    assert 0.5 <= mutated_genome.projection_weight <= 1.0
+    assert 0.0 <= mutated_genome.position_scarcity_weight <= 0.8
+    assert 0.0 <= mutated_genome.adp_value_weight <= 1.0
+    assert 0.0 <= mutated_genome.upside_weight <= 0.7
+    assert 0.0 <= mutated_genome.floor_weight <= 0.7
+    assert 0.0 <= mutated_genome.bye_week_penalty <= 0.3
+    assert 0.0 <= mutated_genome.qb_priority <= 0.35
+    assert 0.35 <= mutated_genome.rb_priority <= 1.0
+    assert 0.35 <= mutated_genome.wr_priority <= 1.0
+    assert 0.1 <= mutated_genome.te_priority <= 0.65
+
+
+def test_create_next_generation_keeps_correct_population_size():
+    league = create_test_league()
+    agents = create_agent_population(population_size=5, seed=1)
+    evaluated_agents = evaluate_population(
+        agents=agents,
+        league=league,
+        rounds=16,
+    )
+    selected_genomes = select_top_genomes(
+        evaluated_agents=evaluated_agents,
+        selection_count=2,
+    )
+
+    next_generation = create_next_generation(
+        selected_genomes=selected_genomes,
+        population_size=100,
+        seed=1,
+    )
+
+    assert len(next_generation) == 100
+
+
+def test_create_next_generation_requires_selected_genomes():
+    import pytest
+
+    with pytest.raises(ValueError):
+        create_next_generation(selected_genomes=[])

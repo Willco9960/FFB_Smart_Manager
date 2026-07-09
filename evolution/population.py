@@ -1,7 +1,8 @@
+import random
 from dataclasses import dataclass
 
 from agents.genome_draft_agent import GenomeDraftAgent
-from evolution.genome import DraftStrategyGenome, create_random_genome
+from evolution.genome import GENOME_WEIGHT_RANGES, DraftStrategyGenome, create_random_genome
 from fantasy_engine.draft import run_snake_draft
 from fantasy_engine.league import League
 from fantasy_engine.scoring import get_winner, score_teams
@@ -92,3 +93,138 @@ def rank_evaluated_agents(
         key=lambda evaluated_agent: evaluated_agent.fitness_score,
         reverse=True,
     )
+
+
+def select_top_genomes(
+    evaluated_agents: list[EvaluatedAgent],
+    selection_count: int,
+) -> list[DraftStrategyGenome]:
+    ranked_agents = rank_evaluated_agents(evaluated_agents)
+
+    selected_genomes = []
+
+    for evaluated_agent in ranked_agents[:selection_count]:
+        selected_genomes.append(evaluated_agent.genome)
+
+    return selected_genomes
+
+
+def clamp_weight(weight_name: str, value: float) -> float:
+    minimum, maximum = GENOME_WEIGHT_RANGES[weight_name]
+
+    if value < minimum:
+        return minimum
+
+    if value > maximum:
+        return maximum
+
+    return round(value, 4)
+
+
+def mutate_weight(
+    weight_name: str,
+    current_value: float,
+    rng: random.Random,
+    mutation_strength: float = 0.1,
+) -> float:
+    mutation_amount = rng.uniform(-mutation_strength, mutation_strength)
+    mutated_value = current_value + mutation_amount
+
+    return clamp_weight(weight_name, mutated_value)
+
+
+def mutate_genome(
+    genome: DraftStrategyGenome,
+    rng: random.Random,
+    mutation_strength: float = 0.1,
+) -> DraftStrategyGenome:
+    return DraftStrategyGenome(
+        projection_weight=mutate_weight(
+            "projection_weight",
+            genome.projection_weight,
+            rng,
+            mutation_strength,
+        ),
+        position_scarcity_weight=mutate_weight(
+            "position_scarcity_weight",
+            genome.position_scarcity_weight,
+            rng,
+            mutation_strength,
+        ),
+        adp_value_weight=mutate_weight(
+            "adp_value_weight",
+            genome.adp_value_weight,
+            rng,
+            mutation_strength,
+        ),
+        upside_weight=mutate_weight(
+            "upside_weight",
+            genome.upside_weight,
+            rng,
+            mutation_strength,
+        ),
+        floor_weight=mutate_weight(
+            "floor_weight",
+            genome.floor_weight,
+            rng,
+            mutation_strength,
+        ),
+        bye_week_penalty=mutate_weight(
+            "bye_week_penalty",
+            genome.bye_week_penalty,
+            rng,
+            mutation_strength,
+        ),
+        qb_priority=mutate_weight(
+            "qb_priority",
+            genome.qb_priority,
+            rng,
+            mutation_strength,
+        ),
+        rb_priority=mutate_weight(
+            "rb_priority",
+            genome.rb_priority,
+            rng,
+            mutation_strength,
+        ),
+        wr_priority=mutate_weight(
+            "wr_priority",
+            genome.wr_priority,
+            rng,
+            mutation_strength,
+        ),
+        te_priority=mutate_weight(
+            "te_priority",
+            genome.te_priority,
+            rng,
+            mutation_strength,
+        ),
+    )
+
+
+def create_next_generation(
+    selected_genomes: list[DraftStrategyGenome],
+    population_size: int = 100,
+    seed: int = 1,
+    mutation_strength: float = 0.1,
+) -> list[GenomeDraftAgent]:
+    if not selected_genomes:
+        raise ValueError("Cannot create next generation without selected genomes.")
+
+    rng = random.Random(seed)
+    next_generation = []
+
+    for genome in selected_genomes:
+        next_generation.append(GenomeDraftAgent(genome=genome))
+
+    while len(next_generation) < population_size:
+        parent_genome = rng.choice(selected_genomes)
+        child_genome = mutate_genome(
+            genome=parent_genome,
+            rng=rng,
+            mutation_strength=mutation_strength,
+        )
+        child_agent = GenomeDraftAgent(genome=child_genome)
+        next_generation.append(child_agent)
+
+    return next_generation
