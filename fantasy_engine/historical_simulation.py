@@ -114,6 +114,24 @@ def run_historical_draft_simulation(
     )
 
 
+def format_winning_team_draft_picks(result: HistoricalSimulationResult) -> str:
+    lines = [f"Winning team draft picks: {result.winner.team_name}"]
+
+    for draft_pick in result.draft_results:
+        if draft_pick.team_name == result.winner.team_name:
+            player = draft_pick.player
+            line = (
+                f"Round {draft_pick.round_number}, "
+                f"Pick {draft_pick.pick_number}: "
+                f"{player.name} "
+                f"({player.position}, {player.team}) - "
+                f"{player.actual_score} points"
+            )
+            lines.append(line)
+
+    return "\n".join(lines)
+
+
 def format_historical_simulation_summary(result: HistoricalSimulationResult) -> str:
     return (
         "Historical draft simulation complete\n"
@@ -124,5 +142,7 @@ def format_historical_simulation_summary(result: HistoricalSimulationResult) -> 
         f"{format_ranked_team_scores(result.team_scores)}\n"
         "\n"
         f"Historical season winner: "
-        f"{result.winner.team_name} with {result.winner.score} points"
+        f"{result.winner.team_name} with {result.winner.score} points\n"
+        "\n"
+        f"{format_winning_team_draft_picks(result)}"
     )
