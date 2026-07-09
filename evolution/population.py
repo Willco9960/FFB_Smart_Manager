@@ -1,12 +1,22 @@
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from agents.genome_draft_agent import GenomeDraftAgent
 from evolution.genome import GENOME_WEIGHT_RANGES, DraftStrategyGenome, create_random_genome
 from fantasy_engine.draft import run_snake_draft
 from fantasy_engine.league import League
-from fantasy_engine.scoring import get_winner, score_teams
+from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot, score_starting_lineup
+from fantasy_engine.player import Player
+from fantasy_engine.scoring import TeamScore, get_winner
 from fantasy_engine.team import Team
+
+
+def find_team_by_name(teams: list[Team], team_name: str) -> Team:
+    for team in teams:
+        if team.name == team_name:
+            return team
+
+    raise ValueError(f"Could not find team named {team_name}.")
 
 
 @dataclass
@@ -14,6 +24,8 @@ class EvaluatedAgent:
     genome: DraftStrategyGenome
     agent: GenomeDraftAgent
     fitness_score: float
+    winning_team_name: str = ""
+    winning_roster: list[Player] = field(default_factory=list)
 
 
 def create_agent_population(
@@ -44,10 +56,29 @@ def clone_league_for_agent(league: League) -> League:
     )
 
 
+def score_team_with_lineup_rules(
+    team: Team,
+    lineup_rules: tuple[LineupSlot, ...],
+) -> TeamScore:
+    try:
+        lineup_score = score_starting_lineup(
+            roster=team.roster,
+            lineup_rules=lineup_rules,
+        )
+    except ValueError:
+        lineup_score = 0.0
+
+    return TeamScore(
+        team_name=team.name,
+        score=lineup_score,
+    )
+
+
 def evaluate_agent(
     agent: GenomeDraftAgent,
     league: League,
     rounds: int = 16,
+    lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
 ) -> EvaluatedAgent:
     test_league = clone_league_for_agent(league)
 
@@ -57,13 +88,24 @@ def evaluate_agent(
         draft_agent=agent,
     )
 
-    team_scores = score_teams(test_league.teams)
+    team_scores = []
+
+    for team in test_league.teams:
+        team_score = score_team_with_lineup_rules(
+            team=team,
+            lineup_rules=lineup_rules,
+        )
+        team_scores.append(team_score)
+
     winner = get_winner(team_scores)
+    winning_team = find_team_by_name(test_league.teams, winner.team_name)
 
     return EvaluatedAgent(
         genome=agent.genome,
         agent=agent,
         fitness_score=winner.score,
+        winning_team_name=winner.team_name,
+        winning_roster=list(winning_team.roster),
     )
 
 
@@ -71,6 +113,7 @@ def evaluate_population(
     agents: list[GenomeDraftAgent],
     league: League,
     rounds: int = 16,
+    lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
 ) -> list[EvaluatedAgent]:
     evaluated_agents = []
 
@@ -79,6 +122,7 @@ def evaluate_population(
             agent=agent,
             league=league,
             rounds=rounds,
+            lineup_rules=lineup_rules,
         )
         evaluated_agents.append(evaluated_agent)
 
