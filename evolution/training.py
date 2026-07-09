@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from agents.genome_draft_agent import GenomeDraftAgent
 from evolution.genome import DraftStrategyGenome
 from evolution.population import (
     create_agent_population,
