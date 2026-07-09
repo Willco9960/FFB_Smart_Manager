@@ -1,6 +1,17 @@
 import json
 
-from evolution.genome import DraftStrategyGenome, create_random_genome, random_weight
+from evolution.genome import (
+    GENOME_WEIGHT_RANGES,
+    DraftStrategyGenome,
+    create_random_genome,
+    random_weight,
+)
+
+
+def assert_weight_in_expected_range(weight_name: str, value: float):
+    minimum, maximum = GENOME_WEIGHT_RANGES[weight_name]
+
+    assert minimum <= value <= maximum
 
 
 def test_random_weight_returns_value_between_zero_and_one():
@@ -13,19 +24,29 @@ def test_random_weight_returns_value_between_zero_and_one():
     assert 0.0 <= value <= 1.0
 
 
-def test_create_random_genome_has_all_strategy_weights():
+def test_create_random_genome_has_all_strategy_weights_in_expected_ranges():
     genome = create_random_genome(seed=42)
 
-    assert 0.0 <= genome.projection_weight <= 1.0
-    assert 0.0 <= genome.position_scarcity_weight <= 1.0
-    assert 0.0 <= genome.adp_value_weight <= 1.0
-    assert 0.0 <= genome.upside_weight <= 1.0
-    assert 0.0 <= genome.floor_weight <= 1.0
-    assert 0.0 <= genome.bye_week_penalty <= 1.0
-    assert 0.0 <= genome.qb_priority <= 1.0
-    assert 0.0 <= genome.rb_priority <= 1.0
-    assert 0.0 <= genome.wr_priority <= 1.0
-    assert 0.0 <= genome.te_priority <= 1.0
+    assert_weight_in_expected_range("projection_weight", genome.projection_weight)
+    assert_weight_in_expected_range(
+        "position_scarcity_weight",
+        genome.position_scarcity_weight,
+    )
+    assert_weight_in_expected_range("adp_value_weight", genome.adp_value_weight)
+    assert_weight_in_expected_range("upside_weight", genome.upside_weight)
+    assert_weight_in_expected_range("floor_weight", genome.floor_weight)
+    assert_weight_in_expected_range("bye_week_penalty", genome.bye_week_penalty)
+    assert_weight_in_expected_range("qb_priority", genome.qb_priority)
+    assert_weight_in_expected_range("rb_priority", genome.rb_priority)
+    assert_weight_in_expected_range("wr_priority", genome.wr_priority)
+    assert_weight_in_expected_range("te_priority", genome.te_priority)
+
+
+def test_random_genome_starts_with_more_realistic_position_priorities():
+    genome = create_random_genome(seed=7)
+
+    assert genome.rb_priority > genome.qb_priority
+    assert genome.wr_priority > genome.qb_priority
 
 
 def test_create_random_genome_is_repeatable_with_seed():

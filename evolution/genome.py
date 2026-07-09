@@ -2,6 +2,19 @@ import json
 import random
 from dataclasses import asdict, dataclass
 
+GENOME_WEIGHT_RANGES = {
+    "projection_weight": (0.5, 1.0),
+    "position_scarcity_weight": (0.0, 0.8),
+    "adp_value_weight": (0.0, 1.0),
+    "upside_weight": (0.0, 0.7),
+    "floor_weight": (0.0, 0.7),
+    "bye_week_penalty": (0.0, 0.3),
+    "qb_priority": (0.0, 0.35),
+    "rb_priority": (0.35, 1.0),
+    "wr_priority": (0.35, 1.0),
+    "te_priority": (0.1, 0.65),
+}
+
 
 @dataclass
 class DraftStrategyGenome:
@@ -45,14 +58,17 @@ def create_random_genome(seed: int | None = None) -> DraftStrategyGenome:
     rng = random.Random(seed)
 
     return DraftStrategyGenome(
-        projection_weight=random_weight(rng),
-        position_scarcity_weight=random_weight(rng),
-        adp_value_weight=random_weight(rng),
-        upside_weight=random_weight(rng),
-        floor_weight=random_weight(rng),
-        bye_week_penalty=random_weight(rng),
-        qb_priority=random_weight(rng),
-        rb_priority=random_weight(rng),
-        wr_priority=random_weight(rng),
-        te_priority=random_weight(rng),
+        projection_weight=random_weight(rng, *GENOME_WEIGHT_RANGES["projection_weight"]),
+        position_scarcity_weight=random_weight(
+            rng,
+            *GENOME_WEIGHT_RANGES["position_scarcity_weight"],
+        ),
+        adp_value_weight=random_weight(rng, *GENOME_WEIGHT_RANGES["adp_value_weight"]),
+        upside_weight=random_weight(rng, *GENOME_WEIGHT_RANGES["upside_weight"]),
+        floor_weight=random_weight(rng, *GENOME_WEIGHT_RANGES["floor_weight"]),
+        bye_week_penalty=random_weight(rng, *GENOME_WEIGHT_RANGES["bye_week_penalty"]),
+        qb_priority=random_weight(rng, *GENOME_WEIGHT_RANGES["qb_priority"]),
+        rb_priority=random_weight(rng, *GENOME_WEIGHT_RANGES["rb_priority"]),
+        wr_priority=random_weight(rng, *GENOME_WEIGHT_RANGES["wr_priority"]),
+        te_priority=random_weight(rng, *GENOME_WEIGHT_RANGES["te_priority"]),
     )
