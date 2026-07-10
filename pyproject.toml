@@ -5,6 +5,7 @@ description = "Fantasy football AI manager and simulation engine."
 requires-python = ">=3.12"
 dependencies = [
     "duckdb>=1.5.0",
+    "torch>=2.7.0",
 ]
 
 [tool.pytest.ini_options]
