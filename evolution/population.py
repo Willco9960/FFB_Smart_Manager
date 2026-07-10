@@ -139,6 +139,60 @@ def evaluate_population(
     return evaluated_agents
 
 
+def split_population_into_leagues(
+    agents: list[GenomeDraftAgent],
+    league_size: int,
+) -> list[list[GenomeDraftAgent]]:
+    if league_size <= 0:
+        raise ValueError("League size must be positive.")
+
+    if len(agents) % league_size != 0:
+        raise ValueError("Population size must be divisible by the league size.")
+
+    return [agents[index : index + league_size] for index in range(0, len(agents), league_size)]
+
+
+def evaluate_population_battle_royale(
+    agents: list[GenomeDraftAgent],
+    league: League,
+    rounds: int = 16,
+    lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    seed: int = 1,
+) -> list[EvaluatedAgent]:
+    league_size = len(league.teams)
+    shuffled_agents = list(agents)
+    random.Random(seed).shuffle(shuffled_agents)
+    agent_groups = split_population_into_leagues(shuffled_agents, league_size)
+    evaluated_agents = []
+
+    for agent_group in agent_groups:
+        test_league = clone_league_for_agent(league)
+        team_agents: dict[str, DraftAgent] = {}
+
+        for team, agent in zip(test_league.teams, agent_group, strict=True):
+            team_agents[team.name] = agent
+
+        run_snake_draft(
+            league=test_league,
+            rounds=rounds,
+            team_agents=team_agents,
+        )
+
+        for team, agent in zip(test_league.teams, agent_group, strict=True):
+            team_score = score_team_with_lineup_rules(team, lineup_rules)
+            evaluated_agents.append(
+                EvaluatedAgent(
+                    genome=agent.genome,
+                    agent=agent,
+                    fitness_score=team_score.score,
+                    winning_team_name=team.name,
+                    winning_roster=list(team.roster),
+                )
+            )
+
+    return evaluated_agents
+
+
 def rank_evaluated_agents(
     evaluated_agents: list[EvaluatedAgent],
 ) -> list[EvaluatedAgent]:
@@ -256,6 +310,23 @@ def mutate_genome(
     )
 
 
+def crossover_genomes(
+    first_parent: DraftStrategyGenome,
+    second_parent: DraftStrategyGenome,
+    rng: random.Random,
+) -> DraftStrategyGenome:
+    first_parent_data = first_parent.to_dict()
+    second_parent_data = second_parent.to_dict()
+    child_data = {}
+
+    for weight_name in first_parent_data:
+        child_data[weight_name] = rng.choice(
+            [first_parent_data[weight_name], second_parent_data[weight_name]]
+        )
+
+    return DraftStrategyGenome.from_dict(child_data)
+
+
 def create_next_generation(
     selected_genomes: list[DraftStrategyGenome],
     population_size: int = 100,
@@ -272,9 +343,11 @@ def create_next_generation(
         next_generation.append(GenomeDraftAgent(genome=genome))
 
     while len(next_generation) < population_size:
-        parent_genome = rng.choice(selected_genomes)
+        first_parent = rng.choice(selected_genomes)
+        second_parent = rng.choice(selected_genomes)
+        child_genome = crossover_genomes(first_parent, second_parent, rng)
         child_genome = mutate_genome(
-            genome=parent_genome,
+            genome=child_genome,
             rng=rng,
             mutation_strength=mutation_strength,
         )

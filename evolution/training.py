@@ -5,7 +5,7 @@ from evolution.genome import DraftStrategyGenome
 from evolution.population import (
     create_agent_population,
     create_next_generation,
-    evaluate_population,
+    evaluate_population_battle_royale,
     rank_evaluated_agents,
     select_top_genomes,
 )
@@ -75,7 +75,7 @@ def run_training_experiment(
     best_genome = agents[0].genome
 
     for generation_number in range(1, generation_count + 1):
-        evaluated_agents = evaluate_population(
+        evaluated_agents = evaluate_population_battle_royale(
             agents=agents,
             league=league,
             rounds=rounds,

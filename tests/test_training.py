@@ -38,7 +38,7 @@ def test_run_training_experiment_returns_result_for_each_generation():
 
     training_result = run_training_experiment(
         league=league,
-        population_size=5,
+        population_size=10,
         generation_count=3,
         selection_count=2,
         seed=1,
@@ -52,7 +52,7 @@ def test_run_training_experiment_tracks_best_score_and_genome():
 
     training_result = run_training_experiment(
         league=league,
-        population_size=5,
+        population_size=10,
         generation_count=3,
         selection_count=2,
         seed=1,
@@ -67,7 +67,7 @@ def test_generation_results_include_generation_number_and_best_score():
 
     training_result = run_training_experiment(
         league=league,
-        population_size=5,
+        population_size=10,
         generation_count=3,
         selection_count=2,
         seed=1,
@@ -168,7 +168,7 @@ def test_run_and_save_training_experiment_saves_best_genome(tmp_path):
     training_result = run_and_save_training_experiment(
         league=league,
         output_path=output_path,
-        population_size=5,
+        population_size=10,
         generation_count=3,
         selection_count=2,
         seed=1,
@@ -201,7 +201,7 @@ def test_training_result_tracks_winning_roster():
 
     training_result = run_training_experiment(
         league=league,
-        population_size=5,
+        population_size=10,
         generation_count=3,
         selection_count=2,
         seed=1,
@@ -218,7 +218,7 @@ def test_get_roster_signature_matches_same_players():
 
     training_result = run_training_experiment(
         league=league,
-        population_size=5,
+        population_size=10,
         generation_count=3,
         selection_count=2,
         seed=1,
@@ -234,7 +234,7 @@ def test_have_same_winning_roster_returns_boolean():
 
     training_result = run_training_experiment(
         league=league,
-        population_size=5,
+        population_size=10,
         generation_count=3,
         selection_count=2,
         seed=1,
@@ -250,7 +250,7 @@ def test_format_generation_roster_report_includes_same_roster_result():
 
     training_result = run_training_experiment(
         league=league,
-        population_size=5,
+        population_size=10,
         generation_count=3,
         selection_count=2,
         seed=1,

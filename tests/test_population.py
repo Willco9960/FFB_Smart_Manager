@@ -6,12 +6,15 @@ from evolution.population import (
     clone_league_for_agent,
     create_agent_population,
     create_next_generation,
+    crossover_genomes,
     evaluate_agent,
     evaluate_population,
+    evaluate_population_battle_royale,
     mutate_genome,
     mutate_weight,
     rank_evaluated_agents,
     select_top_genomes,
+    split_population_into_leagues,
 )
 from fantasy_engine.fake_data import create_fake_player_pool
 from fantasy_engine.league import League
@@ -227,3 +230,43 @@ def test_create_next_generation_requires_selected_genomes():
 
     with pytest.raises(ValueError):
         create_next_generation(selected_genomes=[])
+
+
+def test_split_population_into_ten_team_leagues():
+    agents = create_agent_population(population_size=20, seed=1)
+
+    agent_groups = split_population_into_leagues(agents, league_size=10)
+
+    assert len(agent_groups) == 2
+    assert all(len(agent_group) == 10 for agent_group in agent_groups)
+
+
+def test_battle_royale_scores_every_agent_in_a_population():
+    league = create_test_league()
+    agents = create_agent_population(population_size=10, seed=1)
+
+    evaluated_agents = evaluate_population_battle_royale(
+        agents=agents,
+        league=league,
+        rounds=16,
+        seed=1,
+    )
+
+    assert len(evaluated_agents) == 10
+    assert {
+        evaluated_agent.genome.to_json() for evaluated_agent in evaluated_agents
+    } == {agent.genome.to_json() for agent in agents}
+    assert all(evaluated_agent.fitness_score > 0.0 for evaluated_agent in evaluated_agents)
+
+
+def test_crossover_genomes_inherits_each_weight_from_a_parent():
+    first_parent = create_agent_population(population_size=1, seed=1)[0].genome
+    second_parent = create_agent_population(population_size=1, seed=2)[0].genome
+
+    child = crossover_genomes(first_parent, second_parent, random.Random(42))
+
+    for weight_name, child_value in child.to_dict().items():
+        assert child_value in {
+            first_parent.to_dict()[weight_name],
+            second_parent.to_dict()[weight_name],
+        }
