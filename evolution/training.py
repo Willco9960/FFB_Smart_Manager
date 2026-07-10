@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from evolution.genome import DraftStrategyGenome
@@ -9,6 +9,7 @@ from evolution.population import (
     rank_evaluated_agents,
     select_top_genomes,
 )
+from fantasy_engine.draft import DraftPick
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
 from fantasy_engine.player import Player
@@ -28,6 +29,7 @@ class GenerationResult:
     best_genome: DraftStrategyGenome
     winning_team_name: str
     winning_roster: list[Player]
+    winning_draft_picks: list[DraftPick] = field(default_factory=list)
     average_score: float | None = None
 
 
@@ -96,6 +98,7 @@ def run_training_experiment(
             best_genome=generation_best_agent.genome,
             winning_team_name=generation_best_agent.winning_team_name,
             winning_roster=generation_best_agent.winning_roster,
+            winning_draft_picks=generation_best_agent.winning_draft_picks,
             average_score=average_score,
         )
         generation_results.append(generation_result)
@@ -237,6 +240,20 @@ def format_roster(player_roster: list[Player]) -> str:
     return "\n".join(lines)
 
 
+def format_draft_picks(draft_picks: list[DraftPick]) -> str:
+    lines = ["Draft order:"]
+
+    for draft_pick in draft_picks:
+        player = draft_pick.player
+        lines.append(
+            f"Round {draft_pick.round_number}, Pick {draft_pick.pick_number}: "
+            f"{player.name} ({player.position}, {player.team}) - "
+            f"projection {player.projected_score}, actual {player.actual_score}"
+        )
+
+    return "\n".join(lines)
+
+
 def format_generation_roster_report(
     training_result: TrainingResult,
     generation_numbers: list[int],
@@ -253,7 +270,7 @@ def format_generation_roster_report(
             f"{generation_result.winning_team_name}, "
             f"score {generation_result.best_score}"
         )
-        lines.append(format_roster(generation_result.winning_roster))
+        lines.append(format_draft_picks(generation_result.winning_draft_picks))
         lines.append("")
 
     same_roster = have_same_winning_roster(

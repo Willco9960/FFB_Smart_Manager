@@ -5,6 +5,7 @@ from evolution.training import (
     GenerationResult,
     TrainingResult,
     calculate_generation_mutation_strength,
+    format_draft_picks,
     format_generation_roster_report,
     format_training_log,
     get_roster_signature,
@@ -13,8 +14,10 @@ from evolution.training import (
     run_training_experiment,
     save_best_genome,
 )
+from fantasy_engine.draft import DraftPick
 from fantasy_engine.fake_data import create_fake_player_pool
 from fantasy_engine.league import League
+from fantasy_engine.player import Player
 from fantasy_engine.team import Team
 
 
@@ -260,3 +263,16 @@ def test_format_generation_roster_report_includes_same_roster_result():
 
     assert "Generation 1:" in report
     assert "Same winning roster:" in report
+
+
+def test_format_draft_picks_uses_round_and_overall_pick_order():
+    player = Player(name="Test RB", position="RB", team="ATL", projected_score=10.0)
+    draft_picks = [
+        DraftPick(round_number=2, pick_number=20, team_name="Team 1", player=player),
+        DraftPick(round_number=1, pick_number=1, team_name="Team 1", player=player),
+    ]
+
+    report = format_draft_picks(draft_picks)
+
+    assert "Round 2, Pick 20: Test RB" in report
+    assert "Round 1, Pick 1: Test RB" in report

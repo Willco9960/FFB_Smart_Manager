@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from agents.baseline_agents import create_baseline_opponents
 from agents.genome_draft_agent import GenomeDraftAgent
 from evolution.genome import GENOME_WEIGHT_RANGES, DraftStrategyGenome, create_random_genome
-from fantasy_engine.draft import DraftAgent, run_snake_draft
+from fantasy_engine.draft import DraftAgent, DraftPick, run_snake_draft
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot, score_starting_lineup
 from fantasy_engine.player import Player
@@ -27,6 +27,7 @@ class EvaluatedAgent:
     fitness_score: float
     winning_team_name: str = ""
     winning_roster: list[Player] = field(default_factory=list)
+    winning_draft_picks: list[DraftPick] = field(default_factory=list)
 
 
 def create_agent_population(
@@ -98,7 +99,7 @@ def evaluate_agent(
     ):
         team_agents[team.name] = opponent
 
-    run_snake_draft(
+    draft_results = run_snake_draft(
         league=test_league,
         rounds=rounds,
         team_agents=team_agents,
@@ -114,6 +115,9 @@ def evaluate_agent(
         fitness_score=target_team_score.score,
         winning_team_name=target_team.name,
         winning_roster=list(target_team.roster),
+        winning_draft_picks=[
+            draft_pick for draft_pick in draft_results if draft_pick.team_name == target_team.name
+        ],
     )
 
 
@@ -172,7 +176,7 @@ def evaluate_population_battle_royale(
         for team, agent in zip(test_league.teams, agent_group, strict=True):
             team_agents[team.name] = agent
 
-        run_snake_draft(
+        draft_results = run_snake_draft(
             league=test_league,
             rounds=rounds,
             team_agents=team_agents,
@@ -187,6 +191,11 @@ def evaluate_population_battle_royale(
                     fitness_score=team_score.score,
                     winning_team_name=team.name,
                     winning_roster=list(team.roster),
+                    winning_draft_picks=[
+                        draft_pick
+                        for draft_pick in draft_results
+                        if draft_pick.team_name == team.name
+                    ],
                 )
             )
 
