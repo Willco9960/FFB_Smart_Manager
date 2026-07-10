@@ -197,3 +197,55 @@ def test_genome_draft_agent_can_complete_full_draft():
 
     for team in league.teams:
         assert team.roster_size() == 16
+
+
+def test_genome_draft_agent_limits_quarterbacks_to_two():
+    agent = GenomeDraftAgent(genome=create_test_genome())
+    team = Team(name="Test Team")
+    team.add_player(Player(name="QB 1", position="QB", team="ATL"))
+    team.add_player(Player(name="QB 2", position="QB", team="BUF"))
+
+    assert not agent.can_draft_player(
+        Player(name="QB 3", position="QB", team="CIN"),
+        team,
+        League(name="Test League", teams=[team]),
+    )
+
+
+def test_genome_draft_agent_preserves_space_for_minimum_positions():
+    agent = GenomeDraftAgent(genome=create_test_genome())
+    team = Team(name="Test Team")
+
+    for number in range(12):
+        team.add_player(Player(name=f"WR {number}", position="WR", team="ATL"))
+
+    assert not agent.can_draft_player(
+        Player(name="WR Final", position="WR", team="BUF"),
+        team,
+        League(name="Test League", teams=[team]),
+    )
+
+
+def test_genome_draft_agent_full_draft_meets_minimum_roster_shape():
+    players = create_fake_player_pool()
+    teams = [Team(name=f"Team {number}") for number in range(1, 11)]
+    league = League(
+        name="Test League",
+        teams=teams,
+        available_players=players,
+    )
+    agent = GenomeDraftAgent(genome=create_test_genome())
+
+    run_snake_draft(
+        league=league,
+        rounds=16,
+        draft_agent=agent,
+    )
+
+    for team in league.teams:
+        position_counts = agent.get_position_counts(team)
+
+        assert position_counts["QB"] >= 1
+        assert position_counts["RB"] >= 4
+        assert position_counts["WR"] >= 4
+        assert position_counts["TE"] >= 1
