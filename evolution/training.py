@@ -106,7 +106,7 @@ def run_training_experiment(
         selected_genomes = select_top_genomes(
             evaluated_agents=evaluated_agents,
             selection_count=selection_count,
-        ) 
+        )
 
         generation_mutation_strength = calculate_generation_mutation_strength(
             generation_number=generation_number,
