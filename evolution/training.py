@@ -28,6 +28,7 @@ class GenerationResult:
     best_genome: DraftStrategyGenome
     winning_team_name: str
     winning_roster: list[Player]
+    average_score: float | None = None
 
 
 @dataclass
@@ -82,6 +83,11 @@ def run_training_experiment(
         )
         ranked_agents = rank_evaluated_agents(evaluated_agents)
         generation_best_agent = ranked_agents[0]
+        average_score = round(
+            sum(evaluated_agent.fitness_score for evaluated_agent in evaluated_agents)
+            / len(evaluated_agents),
+            2,
+        )
 
         generation_result = GenerationResult(
             generation_number=generation_number,
@@ -89,6 +95,7 @@ def run_training_experiment(
             best_genome=generation_best_agent.genome,
             winning_team_name=generation_best_agent.winning_team_name,
             winning_roster=generation_best_agent.winning_roster,
+            average_score=average_score,
         )
         generation_results.append(generation_result)
 
