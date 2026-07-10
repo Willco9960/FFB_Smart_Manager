@@ -80,6 +80,7 @@ def run_training_experiment(
             league=league,
             rounds=rounds,
             lineup_rules=lineup_rules,
+            seed=seed + (generation_number * population_size),
         )
         ranked_agents = rank_evaluated_agents(evaluated_agents)
         generation_best_agent = ranked_agents[0]

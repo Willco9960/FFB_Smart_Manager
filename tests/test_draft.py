@@ -8,6 +8,16 @@ from fantasy_engine.league import League
 from fantasy_engine.team import Team
 
 
+class FirstAvailableAgent:
+    def choose_player(self, available_players, team, league):
+        return available_players[0]
+
+
+class LastAvailableAgent:
+    def choose_player(self, available_players, team, league):
+        return available_players[-1]
+
+
 def create_test_league(team_count: int = 10) -> League:
     teams = []
 
@@ -68,3 +78,20 @@ def test_draft_results_can_be_formatted():
     assert "Pick 1:" in formatted_results
     assert "Round 1" in formatted_results
     assert "selected" in formatted_results
+
+
+def test_snake_draft_uses_the_agent_assigned_to_each_team():
+    league = create_test_league(team_count=2)
+    team_agents = {
+        "Team 1": FirstAvailableAgent(),
+        "Team 2": LastAvailableAgent(),
+    }
+
+    draft_results = run_snake_draft(
+        league=league,
+        rounds=1,
+        team_agents=team_agents,
+    )
+
+    assert draft_results[0].player.name == "QB Player 1"
+    assert draft_results[1].player.name == "DST Player 16"

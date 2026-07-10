@@ -71,6 +71,8 @@ def test_evaluate_agent_assigns_fitness_score():
     assert evaluated_agent.agent == agent
     assert evaluated_agent.genome == agent.genome
     assert evaluated_agent.fitness_score > 0.0
+    assert evaluated_agent.winning_team_name in [team.name for team in league.teams]
+    assert len(evaluated_agent.winning_roster) == 16
 
 
 def test_evaluate_agent_does_not_mutate_original_league():

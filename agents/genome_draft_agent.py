@@ -259,13 +259,10 @@ class GenomeDraftAgent:
         return player.projected_score - average_projection
 
     def get_upside_score(self, player: Player) -> float:
-        return max(player.projected_score, player.actual_score)
+        return player.projected_score
 
     def get_floor_score(self, player: Player) -> float:
-        if player.actual_score == 0.0:
-            return player.projected_score
-
-        return min(player.projected_score, player.actual_score)
+        return player.projected_score
 
     def get_bye_penalty(self, player: Player) -> float:
         return 0.0

@@ -177,6 +177,20 @@ def test_genome_draft_agent_scores_position_value():
     assert strong_score > weak_score
 
 
+def test_genome_draft_agent_does_not_use_actual_score_when_drafting():
+    agent = GenomeDraftAgent(genome=create_test_genome())
+    player = Player(
+        name="Test Player",
+        position="RB",
+        team="ATL",
+        projected_score=20.0,
+        actual_score=999.0,
+    )
+
+    assert agent.get_upside_score(player) == 20.0
+    assert agent.get_floor_score(player) == 20.0
+
+
 def test_genome_draft_agent_can_complete_full_draft():
     players = create_fake_player_pool()
     teams = [Team(name=f"Team {number}") for number in range(1, 11)]

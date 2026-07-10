@@ -1,13 +1,14 @@
 import random
 from dataclasses import dataclass, field
 
+from agents.baseline_agents import create_baseline_opponents
 from agents.genome_draft_agent import GenomeDraftAgent
 from evolution.genome import GENOME_WEIGHT_RANGES, DraftStrategyGenome, create_random_genome
-from fantasy_engine.draft import run_snake_draft
+from fantasy_engine.draft import DraftAgent, run_snake_draft
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot, score_starting_lineup
 from fantasy_engine.player import Player
-from fantasy_engine.scoring import TeamScore, get_winner
+from fantasy_engine.scoring import TeamScore
 from fantasy_engine.team import Team
 
 
@@ -79,33 +80,40 @@ def evaluate_agent(
     league: League,
     rounds: int = 16,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    seed: int = 1,
 ) -> EvaluatedAgent:
     test_league = clone_league_for_agent(league)
+    rng = random.Random(seed)
+    target_team = rng.choice(test_league.teams)
+    opponents = create_baseline_opponents(
+        opponent_count=len(test_league.teams) - 1,
+        seed=seed,
+    )
+    team_agents: dict[str, DraftAgent] = {target_team.name: agent}
+
+    for team, opponent in zip(
+        (team for team in test_league.teams if team is not target_team),
+        opponents,
+        strict=True,
+    ):
+        team_agents[team.name] = opponent
 
     run_snake_draft(
         league=test_league,
         rounds=rounds,
-        draft_agent=agent,
+        team_agents=team_agents,
     )
-
-    team_scores = []
-
-    for team in test_league.teams:
-        team_score = score_team_with_lineup_rules(
-            team=team,
-            lineup_rules=lineup_rules,
-        )
-        team_scores.append(team_score)
-
-    winner = get_winner(team_scores)
-    winning_team = find_team_by_name(test_league.teams, winner.team_name)
+    target_team_score = score_team_with_lineup_rules(
+        team=target_team,
+        lineup_rules=lineup_rules,
+    )
 
     return EvaluatedAgent(
         genome=agent.genome,
         agent=agent,
-        fitness_score=winner.score,
-        winning_team_name=winner.team_name,
-        winning_roster=list(winning_team.roster),
+        fitness_score=target_team_score.score,
+        winning_team_name=target_team.name,
+        winning_roster=list(target_team.roster),
     )
 
 
@@ -114,15 +122,17 @@ def evaluate_population(
     league: League,
     rounds: int = 16,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    seed: int = 1,
 ) -> list[EvaluatedAgent]:
     evaluated_agents = []
 
-    for agent in agents:
+    for index, agent in enumerate(agents):
         evaluated_agent = evaluate_agent(
             agent=agent,
             league=league,
             rounds=rounds,
             lineup_rules=lineup_rules,
+            seed=seed + index,
         )
         evaluated_agents.append(evaluated_agent)
 

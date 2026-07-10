@@ -38,7 +38,11 @@ def run_snake_draft(
     league: League,
     rounds: int = 16,
     draft_agent: DraftAgent | None = None,
+    team_agents: dict[str, DraftAgent] | None = None,
 ) -> list[DraftPick]:
+    if draft_agent is not None and team_agents is not None:
+        raise ValueError("Provide either draft_agent or team_agents, not both.")
+
     draft_results = []
     pick_number = 1
 
@@ -46,10 +50,18 @@ def run_snake_draft(
         draft_order = get_snake_draft_order(league.teams, round_number)
 
         for team in draft_order:
-            if draft_agent is None:
+            selected_agent = draft_agent
+
+            if team_agents is not None:
+                selected_agent = team_agents.get(team.name)
+
+                if selected_agent is None:
+                    raise ValueError(f"No draft agent was assigned to {team.name}.")
+
+            if selected_agent is None:
                 selected_player = select_best_available_player(league.available_players)
             else:
-                selected_player = draft_agent.choose_player(
+                selected_player = selected_agent.choose_player(
                     available_players=league.available_players,
                     team=team,
                     league=league,
