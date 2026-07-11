@@ -17,6 +17,15 @@ class WaiverClaim:
 
 
 @dataclass(frozen=True)
+class TradeProposal:
+    proposing_team_name: str
+    receiving_team_name: str
+    offered_players: tuple[Player, ...]
+    requested_players: tuple[Player, ...]
+    week: int
+
+
+@dataclass(frozen=True)
 class Transaction:
     week: int
     transaction_type: str
@@ -126,7 +135,71 @@ def format_transactions(transactions: list[Transaction]) -> str:
         return "No transactions."
 
     return "\n".join(
+        format_transaction(transaction)
+        for transaction in transactions
+    )
+
+
+def validate_trade_proposal(league: League, proposal: TradeProposal) -> None:
+    if proposal.proposing_team_name == proposal.receiving_team_name:
+        raise ValueError("A team cannot trade with itself.")
+
+    if not proposal.offered_players or not proposal.requested_players:
+        raise ValueError("A trade must include players from both teams.")
+
+    proposing_team = get_team_by_name(league, proposal.proposing_team_name)
+    receiving_team = get_team_by_name(league, proposal.receiving_team_name)
+
+    offered_player_keys = {(player.name, player.position) for player in proposal.offered_players}
+    requested_player_keys = {
+        (player.name, player.position) for player in proposal.requested_players
+    }
+
+    if len(offered_player_keys) != len(proposal.offered_players):
+        raise ValueError("A trade cannot offer the same player more than once.")
+
+    if len(requested_player_keys) != len(proposal.requested_players):
+        raise ValueError("A trade cannot request the same player more than once.")
+
+    if not all(proposing_team.has_player(player) for player in proposal.offered_players):
+        raise ValueError("The proposing team does not own every offered player.")
+
+    if not all(receiving_team.has_player(player) for player in proposal.requested_players):
+        raise ValueError("The receiving team does not own every requested player.")
+
+
+def apply_trade(league: League, proposal: TradeProposal) -> Transaction:
+    validate_trade_proposal(league, proposal)
+    proposing_team = get_team_by_name(league, proposal.proposing_team_name)
+    receiving_team = get_team_by_name(league, proposal.receiving_team_name)
+
+    for player in proposal.offered_players:
+        proposing_team.remove_player(player)
+        receiving_team.add_player(player)
+
+    for player in proposal.requested_players:
+        receiving_team.remove_player(player)
+        proposing_team.add_player(player)
+
+    offered_names = ", ".join(player.name for player in proposal.offered_players)
+    requested_names = ", ".join(player.name for player in proposal.requested_players)
+
+    return Transaction(
+        week=proposal.week,
+        transaction_type="trade",
+        team_name=proposing_team.name,
+        details=(
+            f"{proposing_team.name} sent {offered_names} to {receiving_team.name} "
+            f"for {requested_names}"
+        ),
+    )
+
+
+def format_transaction(transaction: Transaction) -> str:
+    if transaction.transaction_type == "trade":
+        return f"Week {transaction.week}: TRADE - {transaction.details}"
+
+    return (
         f"Week {transaction.week}: {transaction.team_name} added "
         f"{transaction.added_player_name} and dropped {transaction.dropped_player_name}"
-        for transaction in transactions
     )

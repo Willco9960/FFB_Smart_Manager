@@ -1,4 +1,5 @@
 from agents.genome_draft_agent import GenomeDraftAgent
+from agents.trade_agent import GenomeTradeAgent
 from agents.waiver_agent import GenomeWaiverAgent
 from evolution.population import create_agent_population
 from fantasy_engine.draft import run_snake_draft
@@ -47,11 +48,16 @@ def main():
         team_name: GenomeWaiverAgent(genome=draft_agent.genome)
         for team_name, draft_agent in draft_agents.items()
     }
+    trade_agents = {
+        team_name: GenomeTradeAgent(genome=draft_agent.genome)
+        for team_name, draft_agent in draft_agents.items()
+    }
     performances = load_weekly_performances(2021)
     result = run_historical_regular_season(
         league,
         performances,
         waiver_agents=waiver_agents,
+        trade_agents=trade_agents,
     )
     playoff_result = simulate_espn_six_team_playoffs(league, result.standings, performances)
 
@@ -61,6 +67,7 @@ def main():
         "historical weekly scores are applied afterward."
     )
     print("Waiver claims process before each week's lineup decisions.")
+    print("Mutually beneficial trade proposals process before weekly waivers.")
     print("")
     print(format_week_by_week_report(result))
     print("")

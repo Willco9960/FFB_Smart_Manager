@@ -1,5 +1,6 @@
 from dataclasses import dataclass, replace
 
+from agents.trade_agent import TradeAgent
 from agents.waiver_agent import WaiverAgent
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
@@ -12,8 +13,10 @@ from fantasy_engine.season import (
     initialize_standings,
     rank_standings,
 )
+from fantasy_engine.team import Team
 from fantasy_engine.transactions import (
     Transaction,
+    apply_trade,
     create_inverse_standings_waiver_order,
     format_transactions,
     process_waiver_claims,
@@ -42,6 +45,7 @@ def run_historical_regular_season(
     rules: ESPNLeagueRules = ESPN_TEN_TEAM_DEFAULT_RULES,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     waiver_agents: dict[str, WaiverAgent] | None = None,
+    trade_agents: dict[str, TradeAgent] | None = None,
 ) -> RegularSeasonSimulationResult:
     team_names = [team.name for team in league.teams]
     schedule = create_regular_season_schedule(team_names, rules)
@@ -51,13 +55,20 @@ def run_historical_regular_season(
     weekly_transactions = {}
 
     for week in range(1, rules.regular_season_weeks + 1):
-        weekly_transactions[week] = run_weekly_waivers(
+        weekly_transactions[week] = run_weekly_trades(
+            league=league,
+            standings=standings,
+            performances=performances,
+            week=week,
+            trade_agents=trade_agents,
+        )
+        weekly_transactions[week].extend(run_weekly_waivers(
             league=league,
             standings=standings,
             performances=performances,
             week=week,
             waiver_agents=waiver_agents,
-        )
+        ))
         weekly_scores[week] = simulate_historical_week(
             teams=league.teams,
             standings=standings,
@@ -147,6 +158,84 @@ def run_weekly_waivers(
     result = process_waiver_claims(league, claims, waiver_order)
 
     return result.transactions
+
+
+def run_weekly_trades(
+    league: League,
+    standings: dict[str, TeamStanding],
+    performances: list[WeeklyPlayerPerformance],
+    week: int,
+    trade_agents: dict[str, TradeAgent] | None,
+) -> list[Transaction]:
+    if trade_agents is None:
+        return []
+
+    projected_teams = [
+        replace(
+            team,
+            roster=create_weekly_projected_roster(team.roster, performances, week),
+        )
+        for team in league.teams
+    ]
+    projected_teams_by_name = {team.name: team for team in projected_teams}
+    original_teams_by_name = {team.name: team for team in league.teams}
+    projected_league = replace(league, teams=projected_teams)
+    traded_team_names = set()
+    transactions = []
+
+    for team_name in create_inverse_standings_waiver_order(standings):
+        if team_name in traded_team_names:
+            continue
+
+        trade_agent = trade_agents.get(team_name)
+
+        if trade_agent is None:
+            continue
+
+        projected_team = projected_teams_by_name[team_name]
+        opposing_teams = [
+            team
+            for team in projected_teams
+            if team.name != team_name and team.name not in traded_team_names
+        ]
+        projected_proposal = trade_agent.choose_trade_proposal(
+            team=projected_team,
+            opposing_teams=opposing_teams,
+            league=projected_league,
+            week=week,
+        )
+
+        if projected_proposal is None:
+            continue
+
+        original_proposing_team = original_teams_by_name[projected_proposal.proposing_team_name]
+        original_receiving_team = original_teams_by_name[projected_proposal.receiving_team_name]
+        original_offered_players = tuple(
+            find_player_by_key(original_proposing_team, player.name, player.position)
+            for player in projected_proposal.offered_players
+        )
+        original_requested_players = tuple(
+            find_player_by_key(original_receiving_team, player.name, player.position)
+            for player in projected_proposal.requested_players
+        )
+        proposal = replace(
+            projected_proposal,
+            offered_players=original_offered_players,
+            requested_players=original_requested_players,
+        )
+        transactions.append(apply_trade(league, proposal))
+        traded_team_names.add(proposal.proposing_team_name)
+        traded_team_names.add(proposal.receiving_team_name)
+
+    return transactions
+
+
+def find_player_by_key(team: Team, player_name: str, position: str):
+    for player in team.roster:
+        if (player.name, player.position) == (player_name, position):
+            return player
+
+    raise ValueError(f"Could not find {player_name} ({position}) on {team.name}'s roster.")
 
 
 def format_final_standings(result: RegularSeasonSimulationResult) -> str:
