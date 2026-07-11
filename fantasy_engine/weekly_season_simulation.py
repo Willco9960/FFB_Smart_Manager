@@ -1,5 +1,6 @@
 from dataclasses import dataclass, replace
 
+from agents.waiver_agent import WaiverAgent
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
 from fantasy_engine.season import (
@@ -11,7 +12,14 @@ from fantasy_engine.season import (
     initialize_standings,
     rank_standings,
 )
+from fantasy_engine.transactions import (
+    Transaction,
+    create_inverse_standings_waiver_order,
+    format_transactions,
+    process_waiver_claims,
+)
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
+from fantasy_engine.weekly_projection import create_weekly_projected_roster
 from fantasy_engine.weekly_simulation import simulate_historical_week
 
 
@@ -22,6 +30,7 @@ class RegularSeasonSimulationResult:
     standings: dict[str, TeamStanding]
     weekly_scores: dict[int, dict[str, float]]
     weekly_standings: dict[int, list[TeamStanding]]
+    weekly_transactions: dict[int, list[Transaction]]
 
     def ranked_standings(self) -> list[TeamStanding]:
         return rank_standings(self.standings)
@@ -32,14 +41,23 @@ def run_historical_regular_season(
     performances: list[WeeklyPlayerPerformance],
     rules: ESPNLeagueRules = ESPN_TEN_TEAM_DEFAULT_RULES,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    waiver_agents: dict[str, WaiverAgent] | None = None,
 ) -> RegularSeasonSimulationResult:
     team_names = [team.name for team in league.teams]
     schedule = create_regular_season_schedule(team_names, rules)
     standings = initialize_standings(team_names)
     weekly_scores = {}
     weekly_standings = {}
+    weekly_transactions = {}
 
     for week in range(1, rules.regular_season_weeks + 1):
+        weekly_transactions[week] = run_weekly_waivers(
+            league=league,
+            standings=standings,
+            performances=performances,
+            week=week,
+            waiver_agents=waiver_agents,
+        )
         weekly_scores[week] = simulate_historical_week(
             teams=league.teams,
             standings=standings,
@@ -56,7 +74,79 @@ def run_historical_regular_season(
         standings=standings,
         weekly_scores=weekly_scores,
         weekly_standings=weekly_standings,
+        weekly_transactions=weekly_transactions,
     )
+
+
+def run_weekly_waivers(
+    league: League,
+    standings: dict[str, TeamStanding],
+    performances: list[WeeklyPlayerPerformance],
+    week: int,
+    waiver_agents: dict[str, WaiverAgent] | None,
+) -> list[Transaction]:
+    if waiver_agents is None:
+        return []
+
+    projected_available_players = create_weekly_projected_roster(
+        league.available_players,
+        performances,
+        week,
+    )
+    projected_players_by_key = {
+        (player.name, player.position): player for player in projected_available_players
+    }
+    claims = []
+
+    for team in league.teams:
+        waiver_agent = waiver_agents.get(team.name)
+
+        if waiver_agent is None:
+            continue
+
+        projected_roster = create_weekly_projected_roster(team.roster, performances, week)
+        projected_team = replace(team, roster=projected_roster)
+        projected_claim = waiver_agent.choose_waiver_claim(
+            team=projected_team,
+            available_players=projected_available_players,
+            league=league,
+            week=week,
+        )
+
+        if projected_claim is None:
+            continue
+
+        original_add_player = next(
+            player
+            for player in league.available_players
+            if (player.name, player.position)
+            == (projected_claim.add_player.name, projected_claim.add_player.position)
+        )
+        original_drop_player = next(
+            player
+            for player in team.roster
+            if (player.name, player.position)
+            == (projected_claim.drop_player.name, projected_claim.drop_player.position)
+        )
+
+        if (
+            projected_players_by_key[(original_add_player.name, original_add_player.position)]
+            != projected_claim.add_player
+        ):
+            raise ValueError("Could not match a projected waiver player to the free-agent pool.")
+
+        claims.append(
+            replace(
+                projected_claim,
+                add_player=original_add_player,
+                drop_player=original_drop_player,
+            )
+        )
+
+    waiver_order = create_inverse_standings_waiver_order(standings)
+    result = process_waiver_claims(league, claims, waiver_order)
+
+    return result.transactions
 
 
 def format_final_standings(result: RegularSeasonSimulationResult) -> str:
@@ -76,6 +166,9 @@ def format_week_by_week_report(result: RegularSeasonSimulationResult) -> str:
     lines = []
 
     for week, weekly_scores in result.weekly_scores.items():
+        lines.append(f"Week {week} waiver moves:")
+        lines.append(format_transactions(result.weekly_transactions[week]))
+        lines.append("")
         lines.append(f"Week {week} results:")
 
         for matchup in result.schedule:
