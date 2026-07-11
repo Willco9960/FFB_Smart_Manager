@@ -11,6 +11,12 @@ class Team:
     def add_player(self, player: Player) -> None:
         self.roster.append(player)
 
+    def remove_player(self, player: Player) -> None:
+        self.roster.remove(player)
+
+    def has_player(self, player: Player) -> bool:
+        return player in self.roster
+
     def roster_size(self) -> int:
         return len(self.roster)
 
