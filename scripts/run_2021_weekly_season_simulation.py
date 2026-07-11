@@ -8,6 +8,7 @@ from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import load_weekly_performances
 from fantasy_engine.weekly_season_simulation import (
     format_final_standings,
+    format_week_by_week_report,
     run_historical_regular_season,
 )
 
@@ -45,6 +46,8 @@ def main():
 
     print("2021 historical weekly regular-season simulation complete")
     print("Lineups use pre-season projections; historical weekly scores are applied afterward.")
+    print("")
+    print(format_week_by_week_report(result))
     print("")
     print(format_final_standings(result))
     print("")

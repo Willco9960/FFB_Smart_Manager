@@ -4,6 +4,7 @@ from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_season_simulation import (
     format_final_standings,
+    format_week_by_week_report,
     run_historical_regular_season,
 )
 
@@ -54,6 +55,7 @@ def test_run_historical_regular_season_simulates_fourteen_weeks():
     result = run_historical_regular_season(league, performances)
 
     assert len(result.weekly_scores) == 14
+    assert len(result.weekly_standings) == 14
     assert all(len(weekly_scores) == 10 for weekly_scores in result.weekly_scores.values())
     assert all(
         standing.wins + standing.losses + standing.ties == 14
@@ -71,3 +73,16 @@ def test_final_standings_sort_highest_scoring_winning_team_first():
 
     assert result.ranked_standings()[0].team_name == "Team 10"
     assert "Final regular-season standings:" in standings_text
+
+
+def test_week_by_week_report_includes_matchups_and_standing_snapshots():
+    teams = [create_complete_team(number) for number in range(1, 11)]
+    league = League(name="Test League", teams=teams)
+    performances = create_performances(teams)
+
+    result = run_historical_regular_season(league, performances)
+    report = format_week_by_week_report(result)
+
+    assert "Week 1 results:" in report
+    assert "Team 1 7.00 vs Team 10 70.00" in report
+    assert "Standings after Week 1:" in report
