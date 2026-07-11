@@ -3,6 +3,7 @@ from evolution.population import create_agent_population
 from fantasy_engine.draft import run_snake_draft
 from fantasy_engine.league import League
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
+from fantasy_engine.playoffs import format_playoff_result, simulate_espn_six_team_playoffs
 from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import load_weekly_performances
 from fantasy_engine.weekly_season_simulation import (
@@ -40,11 +41,14 @@ def main():
     run_draft(league)
     performances = load_weekly_performances(2021)
     result = run_historical_regular_season(league, performances)
+    playoff_result = simulate_espn_six_team_playoffs(league, result.standings, performances)
 
     print("2021 historical weekly regular-season simulation complete")
     print("Lineups use pre-season projections; historical weekly scores are applied afterward.")
     print("")
     print(format_final_standings(result))
+    print("")
+    print(format_playoff_result(playoff_result))
 
 
 if __name__ == "__main__":
