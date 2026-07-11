@@ -10,6 +10,7 @@ from fantasy_engine.player import Player
 from fantasy_engine.season import ScheduledMatchup, TeamStanding, record_matchup_result
 from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
+from fantasy_engine.weekly_projection import create_weekly_projected_roster
 
 
 def get_weekly_points_by_player(
@@ -58,6 +59,19 @@ def score_weekly_team(
     return starting_lineup, starting_lineup.score()
 
 
+def score_adaptive_weekly_team(
+    team: Team,
+    performances: list[WeeklyPlayerPerformance],
+    week: int,
+    lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+) -> tuple[StartingLineup, float]:
+    weekly_points_by_player = get_weekly_points_by_player(performances, week)
+    projected_roster = create_weekly_projected_roster(team.roster, performances, week)
+    projected_team = Team(name=team.name, roster=projected_roster)
+
+    return score_weekly_team(projected_team, weekly_points_by_player, lineup_rules)
+
+
 def simulate_historical_week(
     teams: list[Team],
     standings: dict[str, TeamStanding],
@@ -67,7 +81,6 @@ def simulate_historical_week(
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
 ) -> dict[str, float]:
     teams_by_name = {team.name: team for team in teams}
-    weekly_points_by_player = get_weekly_points_by_player(performances, week)
     weekly_scores = {}
 
     for matchup in schedule:
@@ -76,8 +89,18 @@ def simulate_historical_week(
 
         first_team = teams_by_name[matchup.first_team_name]
         second_team = teams_by_name[matchup.second_team_name]
-        _, first_team_score = score_weekly_team(first_team, weekly_points_by_player, lineup_rules)
-        _, second_team_score = score_weekly_team(second_team, weekly_points_by_player, lineup_rules)
+        _, first_team_score = score_adaptive_weekly_team(
+            first_team,
+            performances,
+            week,
+            lineup_rules,
+        )
+        _, second_team_score = score_adaptive_weekly_team(
+            second_team,
+            performances,
+            week,
+            lineup_rules,
+        )
         weekly_scores[first_team.name] = first_team_score
         weekly_scores[second_team.name] = second_team_score
         record_matchup_result(standings, matchup, first_team_score, second_team_score)

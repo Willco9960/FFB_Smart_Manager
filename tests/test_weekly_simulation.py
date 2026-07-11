@@ -5,6 +5,7 @@ from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_simulation import (
     create_weekly_scored_roster,
+    score_adaptive_weekly_team,
     score_weekly_team,
     simulate_historical_week,
 )
@@ -88,3 +89,22 @@ def test_simulate_historical_week_updates_head_to_head_standings():
     assert weekly_scores["Team 2"] == 70.0
     assert standings["Team 1"].wins == 1
     assert standings["Team 2"].losses == 1
+
+
+def test_adaptive_weekly_team_updates_lineup_projection_from_prior_weeks():
+    team = create_complete_offensive_roster("Team 1")
+    performances = [
+        *create_weekly_performances(team, 1.0),
+        WeeklyPlayerPerformance(
+            player_id="Team 1 Bench QB",
+            player_name="Team 1 Bench QB",
+            position="QB",
+            team="ATL",
+            week=1,
+            fantasy_points=30.0,
+        ),
+    ]
+
+    starting_lineup, _ = score_adaptive_weekly_team(team, performances, week=2)
+
+    assert "Team 1 Bench QB" in [player.name for player in starting_lineup.players]
