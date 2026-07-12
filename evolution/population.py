@@ -23,7 +23,7 @@ def find_team_by_name(teams: list[Team], team_name: str) -> Team:
 @dataclass
 class EvaluatedAgent:
     genome: DraftStrategyGenome
-    agent: GenomeDraftAgent
+    agent: DraftAgent
     fitness_score: float
     winning_team_name: str = ""
     winning_roster: list[Player] = field(default_factory=list)

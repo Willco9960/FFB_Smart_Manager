@@ -1,8 +1,8 @@
 import random
 
-from agents.genome_draft_agent import GenomeDraftAgent
 from agents.trade_agent import GenomeTradeAgent
 from agents.waiver_agent import GenomeWaiverAgent
+from evolution.genome import create_random_genome
 from evolution.population import (
     EvaluatedAgent,
     clone_league_for_agent,
@@ -77,13 +77,14 @@ def count_playoff_wins(team_seed: int | None, playoff_result) -> int:
 
 
 def evaluate_full_season_battle_royale(
-    agents: list[GenomeDraftAgent],
+    agents: list[DraftAgent],
     league: League,
     performances: list[WeeklyPlayerPerformance],
     rounds: int = 16,
     rules: ESPNLeagueRules = ESPN_TEN_TEAM_DEFAULT_RULES,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     seed: int = 1,
+    transaction_genome_fallback=None,
 ) -> list[EvaluatedAgent]:
     if len(agents) % len(league.teams) != 0:
         raise ValueError("Population size must be divisible by the league team count.")
@@ -92,6 +93,7 @@ def evaluate_full_season_battle_royale(
     random.Random(seed).shuffle(shuffled_agents)
     agent_groups = split_population_into_leagues(shuffled_agents, len(league.teams))
     evaluated_agents = []
+    fallback_genome = transaction_genome_fallback or create_random_genome(seed=seed)
 
     for agent_group in agent_groups:
         simulated_league = clone_league_for_agent(league)
@@ -106,11 +108,15 @@ def evaluate_full_season_battle_royale(
             team_agents=team_agents,
         )
         waiver_agents = {
-            team.name: GenomeWaiverAgent(genome=agent.genome)
+            team.name: GenomeWaiverAgent(
+                genome=getattr(agent, "genome", None) or fallback_genome
+            )
             for team, agent in zip(simulated_league.teams, agent_group, strict=True)
         }
         trade_agents = {
-            team.name: GenomeTradeAgent(genome=agent.genome)
+            team.name: GenomeTradeAgent(
+                genome=getattr(agent, "genome", None) or fallback_genome
+            )
             for team, agent in zip(simulated_league.teams, agent_group, strict=True)
         }
         regular_season = run_historical_regular_season(
@@ -138,6 +144,7 @@ def evaluate_full_season_battle_royale(
                 )
 
         for team, agent in zip(simulated_league.teams, agent_group, strict=True):
+            agent_genome = getattr(agent, "genome", None) or fallback_genome
             standing = regular_season.standings[team.name]
             playoff_seed = get_team_playoff_seed(team.name, ranked_standings)
             playoff_wins = count_playoff_wins(playoff_seed, playoff_result)
@@ -157,7 +164,7 @@ def evaluate_full_season_battle_royale(
             )
             evaluated_agents.append(
                 EvaluatedAgent(
-                    genome=agent.genome,
+                    genome=agent_genome,
                     agent=agent,
                     fitness_score=fitness_score,
                     winning_team_name=team.name,
