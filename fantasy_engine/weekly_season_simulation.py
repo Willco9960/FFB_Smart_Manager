@@ -16,6 +16,8 @@ from fantasy_engine.season import (
 from fantasy_engine.team import Team
 from fantasy_engine.transactions import (
     Transaction,
+    TransactionImpact,
+    TransactionValueTracker,
     apply_trade,
     create_inverse_standings_waiver_order,
     format_transactions,
@@ -34,6 +36,7 @@ class RegularSeasonSimulationResult:
     weekly_scores: dict[int, dict[str, float]]
     weekly_standings: dict[int, list[TeamStanding]]
     weekly_transactions: dict[int, list[Transaction]]
+    weekly_transaction_impacts: dict[int, list[TransactionImpact]]
 
     def ranked_standings(self) -> list[TeamStanding]:
         return rank_standings(self.standings)
@@ -53,6 +56,8 @@ def run_historical_regular_season(
     weekly_scores = {}
     weekly_standings = {}
     weekly_transactions = {}
+    weekly_transaction_impacts = {}
+    transaction_tracker = TransactionValueTracker()
 
     for week in range(1, rules.regular_season_weeks + 1):
         weekly_transactions[week] = run_weekly_trades(
@@ -69,6 +74,7 @@ def run_historical_regular_season(
             week=week,
             waiver_agents=waiver_agents,
         ))
+        transaction_tracker.register(weekly_transactions[week])
         weekly_scores[week] = simulate_historical_week(
             teams=league.teams,
             standings=standings,
@@ -76,6 +82,15 @@ def run_historical_regular_season(
             performances=performances,
             week=week,
             lineup_rules=lineup_rules,
+        )
+        weekly_points_by_player = {
+            (performance.player_name, performance.position): performance.fantasy_points
+            for performance in performances
+            if performance.week == week
+        }
+        weekly_transaction_impacts[week] = transaction_tracker.evaluate_week(
+            week,
+            weekly_points_by_player,
         )
         weekly_standings[week] = [replace(standing) for standing in rank_standings(standings)]
 
@@ -86,6 +101,7 @@ def run_historical_regular_season(
         weekly_scores=weekly_scores,
         weekly_standings=weekly_standings,
         weekly_transactions=weekly_transactions,
+        weekly_transaction_impacts=weekly_transaction_impacts,
     )
 
 
@@ -257,6 +273,12 @@ def format_week_by_week_report(result: RegularSeasonSimulationResult) -> str:
     for week, weekly_scores in result.weekly_scores.items():
         lines.append(f"Week {week} waiver moves:")
         lines.append(format_transactions(result.weekly_transactions[week]))
+        lines.append("Transaction value:")
+        lines.extend(
+            format_transaction_impact(impact)
+            for impact in result.weekly_transaction_impacts[week]
+            if impact.week == week
+        )
         lines.append("")
         lines.append(f"Week {week} results:")
 
@@ -281,3 +303,14 @@ def format_week_by_week_report(result: RegularSeasonSimulationResult) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def format_transaction_impact(impact: TransactionImpact) -> str:
+    incoming = ", ".join(impact.incoming_player_names)
+    outgoing = ", ".join(impact.outgoing_player_names)
+
+    return (
+        f"{impact.team_name}: received [{incoming}] "
+        f"vs gave [{outgoing}] -> "
+        f"{impact.net_points:+.2f} points ({impact.outcome})"
+    )

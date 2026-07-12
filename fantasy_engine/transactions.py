@@ -33,6 +33,34 @@ class Transaction:
     added_player_name: str = ""
     dropped_player_name: str = ""
     details: str = ""
+    added_player: Player | None = None
+    dropped_player: Player | None = None
+    offered_players: tuple[Player, ...] = ()
+    received_players: tuple[Player, ...] = ()
+    counterparty_team_name: str = ""
+
+
+@dataclass(frozen=True)
+class TransactionImpact:
+    week: int
+    transaction_type: str
+    team_name: str
+    incoming_player_names: tuple[str, ...]
+    outgoing_player_names: tuple[str, ...]
+    incoming_points: float
+    outgoing_points: float
+    net_points: float
+    reward: float
+
+    @property
+    def outcome(self) -> str:
+        if self.net_points > 0:
+            return "positive"
+
+        if self.net_points < 0:
+            return "negative"
+
+        return "neutral"
 
 
 @dataclass
@@ -40,6 +68,100 @@ class TransactionResult:
     processed_claims: list[WaiverClaim] = field(default_factory=list)
     rejected_claims: list[WaiverClaim] = field(default_factory=list)
     transactions: list[Transaction] = field(default_factory=list)
+
+
+@dataclass
+class TransactionValueTracker:
+    active_transactions: list[Transaction] = field(default_factory=list)
+    impacts_by_week: dict[int, list[TransactionImpact]] = field(default_factory=dict)
+
+    def register(self, transactions: list[Transaction]) -> None:
+        self.active_transactions.extend(transactions)
+
+    def evaluate_week(
+        self,
+        week: int,
+        weekly_points_by_player: dict[tuple[str, str], float],
+    ) -> list[TransactionImpact]:
+        impacts = []
+
+        for transaction in self.active_transactions:
+            if transaction.week > week:
+                continue
+
+            team_sides = get_transaction_sides(transaction)
+
+            for team_name, incoming_players, outgoing_players in team_sides:
+                incoming_points = round(
+                    sum(
+                        weekly_points_by_player.get(
+                            (player.name, player.position),
+                            0.0,
+                        )
+                        for player in incoming_players
+                    ),
+                    2,
+                )
+                outgoing_points = round(
+                    sum(
+                        weekly_points_by_player.get(
+                            (player.name, player.position),
+                            0.0,
+                        )
+                        for player in outgoing_players
+                    ),
+                    2,
+                )
+                net_points = round(incoming_points - outgoing_points, 2)
+                impacts.append(
+                    TransactionImpact(
+                        week=week,
+                        transaction_type=transaction.transaction_type,
+                        team_name=team_name,
+                        incoming_player_names=tuple(
+                            player.name for player in incoming_players
+                        ),
+                        outgoing_player_names=tuple(
+                            player.name for player in outgoing_players
+                        ),
+                        incoming_points=incoming_points,
+                        outgoing_points=outgoing_points,
+                        net_points=net_points,
+                        reward=net_points,
+                    )
+                )
+
+        self.impacts_by_week[week] = impacts
+        return impacts
+
+
+def get_transaction_sides(
+    transaction: Transaction,
+) -> list[tuple[str, tuple[Player, ...], tuple[Player, ...]]]:
+    if transaction.transaction_type == "waiver":
+        if transaction.added_player is None or transaction.dropped_player is None:
+            return []
+
+        return [
+            (
+                transaction.team_name,
+                (transaction.added_player,),
+                (transaction.dropped_player,),
+            )
+        ]
+
+    return [
+        (
+            transaction.team_name,
+            transaction.received_players,
+            transaction.offered_players,
+        ),
+        (
+            transaction.counterparty_team_name,
+            transaction.offered_players,
+            transaction.received_players,
+        ),
+    ]
 
 
 def get_team_by_name(league: League, team_name: str) -> Team:
@@ -100,6 +222,8 @@ def apply_waiver_claim(
         team_name=team.name,
         added_player_name=claim.add_player.name,
         dropped_player_name=claim.drop_player.name,
+        added_player=claim.add_player,
+        dropped_player=claim.drop_player,
     )
 
 
@@ -192,6 +316,9 @@ def apply_trade(league: League, proposal: TradeProposal) -> Transaction:
             f"{proposing_team.name} sent {offered_names} to {receiving_team.name} "
             f"for {requested_names}"
         ),
+        offered_players=proposal.offered_players,
+        received_players=proposal.requested_players,
+        counterparty_team_name=receiving_team.name,
     )
 
 

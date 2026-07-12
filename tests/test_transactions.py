@@ -5,7 +5,10 @@ from fantasy_engine.player import Player
 from fantasy_engine.season import TeamStanding
 from fantasy_engine.team import Team
 from fantasy_engine.transactions import (
+    TradeProposal,
+    TransactionValueTracker,
     WaiverClaim,
+    apply_trade,
     apply_waiver_claim,
     create_inverse_standings_waiver_order,
     process_waiver_claims,
@@ -86,3 +89,59 @@ def test_waiver_order_awards_contested_free_agent_to_higher_priority_team():
     assert result.processed_claims == [claims[1]]
     assert result.rejected_claims == [claims[0]]
     assert free_agent in league.teams[1].roster
+
+
+def test_transaction_value_tracker_rewards_a_successful_waiver_pickup():
+    league, roster_player_one, _, free_agent = create_league()
+    claim = WaiverClaim("Team One", free_agent, roster_player_one, week=2)
+    transaction = apply_waiver_claim(league, claim)
+    tracker = TransactionValueTracker()
+    tracker.register([transaction])
+
+    impacts = tracker.evaluate_week(
+        week=2,
+        weekly_points_by_player={
+            ("Free Agent", "RB"): 18.0,
+            ("Roster Player One", "RB"): 6.0,
+        },
+    )
+
+    assert impacts[0].net_points == 12.0
+    assert impacts[0].reward == 12.0
+    assert impacts[0].outcome == "positive"
+
+
+def test_transaction_value_tracker_evaluates_trade_for_both_teams():
+    first_player = create_player("First Player")
+    second_player = create_player("Second Player")
+    league = League(
+        name="Trade League",
+        teams=[
+            Team(name="Team One", roster=[first_player]),
+            Team(name="Team Two", roster=[second_player]),
+        ],
+    )
+    transaction = apply_trade(
+        league,
+        TradeProposal(
+            proposing_team_name="Team One",
+            receiving_team_name="Team Two",
+            offered_players=(first_player,),
+            requested_players=(second_player,),
+            week=3,
+        ),
+    )
+    tracker = TransactionValueTracker()
+    tracker.register([transaction])
+
+    impacts = tracker.evaluate_week(
+        week=3,
+        weekly_points_by_player={
+            ("First Player", "RB"): 4.0,
+            ("Second Player", "RB"): 14.0,
+        },
+    )
+
+    assert len(impacts) == 2
+    assert impacts[0].net_points == 10.0
+    assert impacts[1].net_points == -10.0
