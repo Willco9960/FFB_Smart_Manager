@@ -2,7 +2,7 @@ from pathlib import Path
 
 from evolution.genome import DraftStrategyGenome, create_random_genome
 from evolution.neural_policy_training import train_neural_policy_on_seasons
-from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES
+from fantasy_engine.lineup import ESPN_DEFAULT_LINEUP_RULES
 from fantasy_engine.weekly_data import load_weekly_performances
 from models.manager_policy_nn import load_manager_policy_network, save_manager_policy_network
 from scripts.run_full_season_training_experiment import create_training_league
@@ -26,7 +26,7 @@ def main():
     training_result = train_neural_policy_on_seasons(
         initial_network=initial_network,
         league=create_training_league(),
-        performances=load_weekly_performances(2021),
+        performances=load_weekly_performances(2021, include_special_teams=True),
         transaction_genome=load_transaction_genome(),
         population_size=10,
         generation_count=2,
@@ -34,7 +34,7 @@ def main():
         mutation_strength=0.02,
         seed=2021,
         rounds=16,
-        lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,
+        lineup_rules=ESPN_DEFAULT_LINEUP_RULES,
     )
     save_manager_policy_network(training_result.best_agent.policy_network, OUTPUT_PATH)
 

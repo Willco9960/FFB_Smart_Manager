@@ -56,6 +56,9 @@ class NeuralProjectionService:
         )
 
     def predict_player(self, player: Player) -> float:
+        if player.position not in {"QB", "RB", "WR", "TE"}:
+            return round(max(0.0, player.projected_score), 2)
+
         features = self.create_features(player)
         scaled_features = [
             (value - mean) / standard_deviation

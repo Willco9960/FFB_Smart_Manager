@@ -3,7 +3,7 @@ from pathlib import Path
 from evolution.training import format_training_log, run_and_save_training_experiment
 from fantasy_engine.league import League
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
-from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES
+from fantasy_engine.lineup import ESPN_DEFAULT_LINEUP_RULES
 from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import load_weekly_performances
 from models.draft_projection_nn import DEFAULT_MODEL_PATH
@@ -14,12 +14,14 @@ OUTPUT_PATH = Path("data/evolution/best_full_season_2021_genome.json")
 
 def create_training_league() -> League:
     teams = [Team(name=f"Full Season Team {number}") for number in range(1, 11)]
-    players = load_leakage_safe_player_pool(2020, 2021)[:250]
-
     league = League(
         name="2021 Full-Season Training League",
         teams=teams,
-        available_players=players,
+        available_players=load_leakage_safe_player_pool(
+            2020,
+            2021,
+            include_special_teams=True,
+        )[:250],
     )
 
     projection_service = load_neural_projection_service(DEFAULT_MODEL_PATH)
@@ -43,8 +45,8 @@ def main():
         final_mutation_strength=0.03,
         seed=2021,
         rounds=16,
-        lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,
-        performances=load_weekly_performances(2021),
+        lineup_rules=ESPN_DEFAULT_LINEUP_RULES,
+        performances=load_weekly_performances(2021, include_special_teams=True),
     )
 
     print("Full-season evolutionary training complete")

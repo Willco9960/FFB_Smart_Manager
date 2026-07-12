@@ -6,6 +6,8 @@ from fantasy_engine.fantasy_points import (
 from fantasy_engine.historical_loader import RAW_DATA_DIR, load_player_stats
 from fantasy_engine.historical_player_pool import (
     FANTASY_RELEVANT_POSITIONS,
+    SPECIAL_TEAMS_POSITIONS,
+    create_team_defense_rows,
     get_player_name,
     get_player_position,
     get_player_team,
@@ -27,14 +29,36 @@ def is_valid_fantasy_row(row: dict[str, str]) -> bool:
     return player_name != "" and position in FANTASY_RELEVANT_POSITIONS
 
 
+def is_valid_extended_fantasy_row(row: dict[str, str]) -> bool:
+    player_name = get_player_name(row)
+    position = get_player_position(row)
+
+    return (
+        player_name != ""
+        and position in FANTASY_RELEVANT_POSITIONS | SPECIAL_TEAMS_POSITIONS | {"DST"}
+    )
+
+
 def build_season_totals(
     rows: list[dict[str, str]],
     scoring_settings: FantasyScoringSettings = STANDARD_SCORING,
+    include_special_teams: bool = False,
 ) -> dict[tuple[str, str], dict[str, str | float]]:
     season_totals: dict[tuple[str, str], dict[str, str | float]] = {}
 
-    for row in rows:
-        if not is_valid_fantasy_row(row):
+    source_rows = list(rows)
+
+    if include_special_teams:
+        source_rows.extend(create_team_defense_rows(rows))
+
+    for row in source_rows:
+        valid_row = (
+            is_valid_extended_fantasy_row(row)
+            if include_special_teams
+            else is_valid_fantasy_row(row)
+        )
+
+        if not valid_row:
             continue
 
         player_key = create_player_key(row)
@@ -65,14 +89,17 @@ def create_leakage_safe_player_pool(
     projection_rows: list[dict[str, str]],
     actual_rows: list[dict[str, str]],
     scoring_settings: FantasyScoringSettings = STANDARD_SCORING,
+    include_special_teams: bool = False,
 ) -> list[Player]:
     projection_totals = build_season_totals(
         rows=projection_rows,
         scoring_settings=scoring_settings,
+        include_special_teams=include_special_teams,
     )
     actual_totals = build_season_totals(
         rows=actual_rows,
         scoring_settings=scoring_settings,
+        include_special_teams=include_special_teams,
     )
     players = []
 
@@ -103,6 +130,7 @@ def load_leakage_safe_player_pool(
     actual_season: int = 2021,
     raw_data_dir=RAW_DATA_DIR,
     scoring_settings: FantasyScoringSettings = STANDARD_SCORING,
+    include_special_teams: bool = False,
 ) -> list[Player]:
     projection_rows = load_player_stats(
         season=projection_season,
@@ -117,4 +145,5 @@ def load_leakage_safe_player_pool(
         projection_rows=projection_rows,
         actual_rows=actual_rows,
         scoring_settings=scoring_settings,
+        include_special_teams=include_special_teams,
     )

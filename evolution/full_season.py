@@ -109,13 +109,15 @@ def evaluate_full_season_battle_royale(
         )
         waiver_agents = {
             team.name: GenomeWaiverAgent(
-                genome=getattr(agent, "genome", None) or fallback_genome
+                genome=getattr(agent, "genome", None) or fallback_genome,
+                lineup_rules=lineup_rules,
             )
             for team, agent in zip(simulated_league.teams, agent_group, strict=True)
         }
         trade_agents = {
             team.name: GenomeTradeAgent(
-                genome=getattr(agent, "genome", None) or fallback_genome
+                genome=getattr(agent, "genome", None) or fallback_genome,
+                lineup_rules=lineup_rules,
             )
             for team, agent in zip(simulated_league.teams, agent_group, strict=True)
         }

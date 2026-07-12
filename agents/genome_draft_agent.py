@@ -11,12 +11,16 @@ ROSTER_MINIMUMS = {
     "RB": 4,
     "WR": 4,
     "TE": 1,
+    "K": 1,
+    "DST": 1,
 }
 ROSTER_MAXIMUMS = {
     "QB": 2,
     "RB": 6,
     "WR": 7,
     "TE": 3,
+    "K": 1,
+    "DST": 1,
 }
 
 
