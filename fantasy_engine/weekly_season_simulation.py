@@ -271,7 +271,7 @@ def format_week_by_week_report(result: RegularSeasonSimulationResult) -> str:
     lines = []
 
     for week, weekly_scores in result.weekly_scores.items():
-        lines.append(f"Week {week} waiver moves:")
+        lines.append(f"Week {week} transactions:")
         lines.append(format_transactions(result.weekly_transactions[week]))
         lines.append("Transaction value:")
         lines.extend(
