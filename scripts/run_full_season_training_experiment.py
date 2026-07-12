@@ -6,6 +6,8 @@ from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_poo
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES
 from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import load_weekly_performances
+from models.draft_projection_nn import DEFAULT_MODEL_PATH
+from models.projection_service import load_neural_projection_service
 
 OUTPUT_PATH = Path("data/evolution/best_full_season_2021_genome.json")
 
@@ -14,11 +16,20 @@ def create_training_league() -> League:
     teams = [Team(name=f"Full Season Team {number}") for number in range(1, 11)]
     players = load_leakage_safe_player_pool(2020, 2021)[:250]
 
-    return League(
+    league = League(
         name="2021 Full-Season Training League",
         teams=teams,
         available_players=players,
     )
+
+    projection_service = load_neural_projection_service(DEFAULT_MODEL_PATH)
+
+    if projection_service is None:
+        print("Projection source: leakage-safe historical projections")
+        return league
+
+    print("Projection source: neural projection network")
+    return projection_service.project_league(league)
 
 
 def main():
