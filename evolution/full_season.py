@@ -1,5 +1,8 @@
 import random
 
+from agents.neural_draft_agent import NeuralDraftAgent
+from agents.neural_trade_agent import NeuralTradeAgent
+from agents.neural_waiver_agent import NeuralWaiverAgent
 from agents.trade_agent import GenomeTradeAgent
 from agents.waiver_agent import GenomeWaiverAgent
 from evolution.genome import create_random_genome
@@ -107,20 +110,28 @@ def evaluate_full_season_battle_royale(
             rounds=rounds,
             team_agents=team_agents,
         )
-        waiver_agents = {
-            team.name: GenomeWaiverAgent(
-                genome=getattr(agent, "genome", None) or fallback_genome,
-                lineup_rules=lineup_rules,
-            )
-            for team, agent in zip(simulated_league.teams, agent_group, strict=True)
-        }
-        trade_agents = {
-            team.name: GenomeTradeAgent(
-                genome=getattr(agent, "genome", None) or fallback_genome,
-                lineup_rules=lineup_rules,
-            )
-            for team, agent in zip(simulated_league.teams, agent_group, strict=True)
-        }
+        waiver_agents = {}
+        trade_agents = {}
+
+        for team, agent in zip(simulated_league.teams, agent_group, strict=True):
+            if isinstance(agent, NeuralDraftAgent):
+                waiver_agents[team.name] = NeuralWaiverAgent(
+                    policy_network=agent.policy_network,
+                    lineup_rules=lineup_rules,
+                )
+                trade_agents[team.name] = NeuralTradeAgent(
+                    policy_network=agent.policy_network,
+                    lineup_rules=lineup_rules,
+                )
+            else:
+                waiver_agents[team.name] = GenomeWaiverAgent(
+                    genome=getattr(agent, "genome", None) or fallback_genome,
+                    lineup_rules=lineup_rules,
+                )
+                trade_agents[team.name] = GenomeTradeAgent(
+                    genome=getattr(agent, "genome", None) or fallback_genome,
+                    lineup_rules=lineup_rules,
+                )
         regular_season = run_historical_regular_season(
             league=simulated_league,
             performances=performances,
