@@ -28,6 +28,12 @@ class EvaluatedAgent:
     winning_team_name: str = ""
     winning_roster: list[Player] = field(default_factory=list)
     winning_draft_picks: list[DraftPick] = field(default_factory=list)
+    regular_season_wins: int = 0
+    points_for: float = 0.0
+    playoff_seed: int | None = None
+    playoff_wins: int = 0
+    champion: bool = False
+    transaction_reward: float = 0.0
 
 
 def create_agent_population(

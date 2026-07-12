@@ -13,6 +13,7 @@ from fantasy_engine.draft import DraftPick
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
 from fantasy_engine.player import Player
+from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 
 DEFAULT_POPULATION_SIZE = 100
 DEFAULT_GENERATION_COUNT = 20
@@ -67,6 +68,7 @@ def run_training_experiment(
     seed: int = 1,
     rounds: int = 16,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    performances: list[WeeklyPlayerPerformance] | None = None,
 ) -> TrainingResult:
     agents = create_agent_population(
         population_size=population_size,
@@ -77,13 +79,25 @@ def run_training_experiment(
     best_genome = agents[0].genome
 
     for generation_number in range(1, generation_count + 1):
-        evaluated_agents = evaluate_population_battle_royale(
-            agents=agents,
-            league=league,
-            rounds=rounds,
-            lineup_rules=lineup_rules,
-            seed=seed + (generation_number * population_size),
-        )
+        if performances is None:
+            evaluated_agents = evaluate_population_battle_royale(
+                agents=agents,
+                league=league,
+                rounds=rounds,
+                lineup_rules=lineup_rules,
+                seed=seed + (generation_number * population_size),
+            )
+        else:
+            from evolution.full_season import evaluate_full_season_battle_royale
+
+            evaluated_agents = evaluate_full_season_battle_royale(
+                agents=agents,
+                league=league,
+                performances=performances,
+                rounds=rounds,
+                lineup_rules=lineup_rules,
+                seed=seed + (generation_number * population_size),
+            )
         ranked_agents = rank_evaluated_agents(evaluated_agents)
         generation_best_agent = ranked_agents[0]
         average_score = round(
@@ -168,6 +182,7 @@ def run_and_save_training_experiment(
     seed: int = 1,
     rounds: int = 16,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    performances: list[WeeklyPlayerPerformance] | None = None,
 ) -> TrainingResult:
     training_result = run_training_experiment(
         league=league,
@@ -179,6 +194,7 @@ def run_and_save_training_experiment(
         seed=seed,
         rounds=rounds,
         lineup_rules=lineup_rules,
+        performances=performances,
     )
     save_best_genome(training_result, output_path)
 
