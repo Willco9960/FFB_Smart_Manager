@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from agents.neural_lineup_agent import LineupAgent
 from fantasy_engine.lineup import (
     ESPN_OFFENSIVE_LINEUP_RULES,
     LineupSlot,
@@ -52,9 +53,13 @@ def score_weekly_team(
     team: Team,
     weekly_points_by_player: dict[tuple[str, str], float],
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    lineup_agent: LineupAgent | None = None,
 ) -> tuple[StartingLineup, float]:
     weekly_scored_roster = create_weekly_scored_roster(team.roster, weekly_points_by_player)
-    starting_lineup = select_projected_weekly_lineup(weekly_scored_roster, lineup_rules)
+    if lineup_agent is None:
+        starting_lineup = select_projected_weekly_lineup(weekly_scored_roster, lineup_rules)
+    else:
+        starting_lineup = lineup_agent.choose_lineup(weekly_scored_roster)
 
     return starting_lineup, starting_lineup.score()
 
@@ -64,12 +69,18 @@ def score_adaptive_weekly_team(
     performances: list[WeeklyPlayerPerformance],
     week: int,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    lineup_agent: LineupAgent | None = None,
 ) -> tuple[StartingLineup, float]:
     weekly_points_by_player = get_weekly_points_by_player(performances, week)
     projected_roster = create_weekly_projected_roster(team.roster, performances, week)
     projected_team = Team(name=team.name, roster=projected_roster)
 
-    return score_weekly_team(projected_team, weekly_points_by_player, lineup_rules)
+    return score_weekly_team(
+        projected_team,
+        weekly_points_by_player,
+        lineup_rules,
+        lineup_agent,
+    )
 
 
 def simulate_historical_week(
@@ -79,6 +90,7 @@ def simulate_historical_week(
     performances: list[WeeklyPlayerPerformance],
     week: int,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    lineup_agents: dict[str, LineupAgent] | None = None,
 ) -> dict[str, float]:
     teams_by_name = {team.name: team for team in teams}
     weekly_scores = {}
@@ -94,12 +106,14 @@ def simulate_historical_week(
             performances,
             week,
             lineup_rules,
+            None if lineup_agents is None else lineup_agents.get(first_team.name),
         )
         _, second_team_score = score_adaptive_weekly_team(
             second_team,
             performances,
             week,
             lineup_rules,
+            None if lineup_agents is None else lineup_agents.get(second_team.name),
         )
         weekly_scores[first_team.name] = first_team_score
         weekly_scores[second_team.name] = second_team_score

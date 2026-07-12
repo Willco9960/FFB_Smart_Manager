@@ -1,6 +1,7 @@
 import random
 
 from agents.neural_draft_agent import NeuralDraftAgent
+from agents.neural_lineup_agent import NeuralLineupAgent
 from agents.neural_trade_agent import NeuralTradeAgent
 from agents.neural_waiver_agent import NeuralWaiverAgent
 from agents.trade_agent import GenomeTradeAgent
@@ -112,6 +113,7 @@ def evaluate_full_season_battle_royale(
         )
         waiver_agents = {}
         trade_agents = {}
+        lineup_agents = {}
 
         for team, agent in zip(simulated_league.teams, agent_group, strict=True):
             if isinstance(agent, NeuralDraftAgent):
@@ -120,6 +122,10 @@ def evaluate_full_season_battle_royale(
                     lineup_rules=lineup_rules,
                 )
                 trade_agents[team.name] = NeuralTradeAgent(
+                    policy_network=agent.policy_network,
+                    lineup_rules=lineup_rules,
+                )
+                lineup_agents[team.name] = NeuralLineupAgent(
                     policy_network=agent.policy_network,
                     lineup_rules=lineup_rules,
                 )
@@ -139,6 +145,7 @@ def evaluate_full_season_battle_royale(
             lineup_rules=lineup_rules,
             waiver_agents=waiver_agents,
             trade_agents=trade_agents,
+            lineup_agents=lineup_agents,
         )
         playoff_result = simulate_espn_six_team_playoffs(
             league=simulated_league,
@@ -146,6 +153,7 @@ def evaluate_full_season_battle_royale(
             performances=performances,
             rules=rules,
             lineup_rules=lineup_rules,
+            lineup_agents=lineup_agents,
         )
         ranked_standings = rank_standings(regular_season.standings)
         transaction_rewards = {}

@@ -62,6 +62,7 @@ def find_best_player_for_slot(
     available_players: list[Player],
     lineup_slot: LineupSlot,
     selection_score_attribute: str = "actual_score",
+    selection_scores: dict[int, float] | None = None,
 ) -> Player | None:
     eligible_players = []
 
@@ -72,6 +73,9 @@ def find_best_player_for_slot(
     if not eligible_players:
         return None
 
+    if selection_scores is not None:
+        return max(eligible_players, key=lambda player: selection_scores[id(player)])
+
     return max(eligible_players, key=lambda player: getattr(player, selection_score_attribute))
 
 
@@ -80,6 +84,7 @@ def build_best_starting_lineup(
     lineup_rules: tuple[LineupSlot, ...] = ESPN_DEFAULT_LINEUP_RULES,
     require_complete_lineup: bool = True,
     selection_score_attribute: str = "actual_score",
+    selection_scores: dict[int, float] | None = None,
 ) -> StartingLineup:
     available_players = list(roster)
     starting_players = []
@@ -91,6 +96,7 @@ def build_best_starting_lineup(
                 available_players=available_players,
                 lineup_slot=lineup_slot,
                 selection_score_attribute=selection_score_attribute,
+                selection_scores=selection_scores,
             )
 
             if selected_player is None:

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, replace
 
+from agents.neural_lineup_agent import LineupAgent
 from agents.trade_agent import TradeAgent
 from agents.waiver_agent import WaiverAgent
 from fantasy_engine.league import League
@@ -49,6 +50,7 @@ def run_historical_regular_season(
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     waiver_agents: dict[str, WaiverAgent] | None = None,
     trade_agents: dict[str, TradeAgent] | None = None,
+    lineup_agents: dict[str, LineupAgent] | None = None,
 ) -> RegularSeasonSimulationResult:
     team_names = [team.name for team in league.teams]
     schedule = create_regular_season_schedule(team_names, rules)
@@ -82,6 +84,7 @@ def run_historical_regular_season(
             performances=performances,
             week=week,
             lineup_rules=lineup_rules,
+            lineup_agents=lineup_agents,
         )
         weekly_points_by_player = {
             (performance.player_name, performance.position): performance.fantasy_points

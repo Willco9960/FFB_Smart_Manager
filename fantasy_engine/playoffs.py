@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from agents.neural_lineup_agent import LineupAgent
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
 from fantasy_engine.season import (
@@ -51,12 +52,23 @@ def simulate_playoff_game(
     performances: list[WeeklyPlayerPerformance],
     week: int,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    lineup_agents: dict[str, LineupAgent] | None = None,
 ) -> PlayoffGameResult:
     weekly_points = get_weekly_points_by_player(performances, week)
     first_team = seeded_teams[first_seed - 1]
     second_team = seeded_teams[second_seed - 1]
-    _, first_team_score = score_weekly_team(first_team, weekly_points, lineup_rules)
-    _, second_team_score = score_weekly_team(second_team, weekly_points, lineup_rules)
+    _, first_team_score = score_weekly_team(
+        first_team,
+        weekly_points,
+        lineup_rules,
+        None if lineup_agents is None else lineup_agents.get(first_team.name),
+    )
+    _, second_team_score = score_weekly_team(
+        second_team,
+        weekly_points,
+        lineup_rules,
+        None if lineup_agents is None else lineup_agents.get(second_team.name),
+    )
     winner_seed = first_seed
 
     if second_team_score > first_team_score:
@@ -78,10 +90,15 @@ def simulate_espn_six_team_playoffs(
     performances: list[WeeklyPlayerPerformance],
     rules: ESPNLeagueRules = ESPN_TEN_TEAM_DEFAULT_RULES,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    lineup_agents: dict[str, LineupAgent] | None = None,
 ) -> PlayoffSimulationResult:
     seeded_teams = get_playoff_teams(league, standings, rules)
-    first_round_game_one = simulate_playoff_game(3, 6, seeded_teams, performances, 15, lineup_rules)
-    first_round_game_two = simulate_playoff_game(4, 5, seeded_teams, performances, 15, lineup_rules)
+    first_round_game_one = simulate_playoff_game(
+        3, 6, seeded_teams, performances, 15, lineup_rules, lineup_agents
+    )
+    first_round_game_two = simulate_playoff_game(
+        4, 5, seeded_teams, performances, 15, lineup_rules, lineup_agents
+    )
     lowest_remaining_seed = max(first_round_game_one.winner_seed, first_round_game_two.winner_seed)
     other_remaining_seed = min(first_round_game_one.winner_seed, first_round_game_two.winner_seed)
     semifinal_game_one = simulate_playoff_game(
@@ -91,6 +108,7 @@ def simulate_espn_six_team_playoffs(
         performances,
         16,
         lineup_rules,
+        lineup_agents,
     )
     semifinal_game_two = simulate_playoff_game(
         2,
@@ -99,6 +117,7 @@ def simulate_espn_six_team_playoffs(
         performances,
         16,
         lineup_rules,
+        lineup_agents,
     )
     championship_game = simulate_playoff_game(
         semifinal_game_one.winner_seed,
@@ -107,6 +126,7 @@ def simulate_espn_six_team_playoffs(
         performances,
         17,
         lineup_rules,
+        lineup_agents,
     )
     champion = seeded_teams[championship_game.winner_seed - 1]
 
