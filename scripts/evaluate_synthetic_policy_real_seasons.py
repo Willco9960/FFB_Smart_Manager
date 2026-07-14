@@ -13,7 +13,7 @@ from models.projection_service import load_neural_projection_service
 from models.weekly_projection_service import load_weekly_projection_service
 
 ORIGINAL_POLICY_PATH = Path("data/models/manager_policy_full_season.pt")
-SYNTHETIC_POLICY_PATH = Path("data/models/manager_policy_synthetic_seasons.pt")
+MIXED_POLICY_PATH = Path("data/models/manager_policy_mixed_seasons.pt")
 TRANSACTION_GENOME_PATH = Path("data/evolution/best_full_season_2021_genome.json")
 WEEKLY_MODEL_PATH = Path("data/models/weekly_projection_network.pt")
 EVALUATION_SEASONS = (2021, 2022, 2023, 2024, 2025)
@@ -73,46 +73,46 @@ def evaluate_policy(
 def main():
     if not ORIGINAL_POLICY_PATH.exists():
         raise FileNotFoundError(f"Original policy not found: {ORIGINAL_POLICY_PATH}")
-    if not SYNTHETIC_POLICY_PATH.exists():
-        raise FileNotFoundError(f"Synthetic policy not found: {SYNTHETIC_POLICY_PATH}")
+    if not MIXED_POLICY_PATH.exists():
+        raise FileNotFoundError(f"Mixed policy not found: {MIXED_POLICY_PATH}")
 
     transaction_genome = load_transaction_genome()
     original_results = []
-    synthetic_results = []
+    mixed_results = []
 
     for season in EVALUATION_SEASONS:
         print(f"Evaluating both policies on real season {season}...")
         original_results.append(
             evaluate_policy(ORIGINAL_POLICY_PATH, season, transaction_genome)
         )
-        synthetic_results.append(
-            evaluate_policy(SYNTHETIC_POLICY_PATH, season, transaction_genome)
+        mixed_results.append(
+            evaluate_policy(MIXED_POLICY_PATH, season, transaction_genome)
         )
 
-    print("\nSynthetic-trained policy versus original policy")
+    print("\nMixed real-plus-synthetic policy versus original policy")
 
-    for original, synthetic in zip(original_results, synthetic_results, strict=True):
+    for original, mixed in zip(original_results, mixed_results, strict=True):
         print(
             f"{original.season}: "
             f"original {original.fitness:.2f}, "
-            f"synthetic-trained {synthetic.fitness:.2f}, "
-            f"delta {synthetic.fitness - original.fitness:+.2f}, "
-            f"wins {original.wins}->{synthetic.wins}, "
-            f"champion {original.champion}->{synthetic.champion}"
+            f"mixed-trained {mixed.fitness:.2f}, "
+            f"delta {mixed.fitness - original.fitness:+.2f}, "
+            f"wins {original.wins}->{mixed.wins}, "
+            f"champion {original.champion}->{mixed.champion}"
         )
 
     original_average = sum(result.fitness for result in original_results) / len(original_results)
-    synthetic_average = sum(result.fitness for result in synthetic_results) / len(
-        synthetic_results
+    mixed_average = sum(result.fitness for result in mixed_results) / len(
+        mixed_results
     )
     original_playoffs = sum(result.playoff_seed is not None for result in original_results)
-    synthetic_playoffs = sum(result.playoff_seed is not None for result in synthetic_results)
+    mixed_playoffs = sum(result.playoff_seed is not None for result in mixed_results)
     original_championships = sum(result.champion for result in original_results)
-    synthetic_championships = sum(result.champion for result in synthetic_results)
+    mixed_championships = sum(result.champion for result in mixed_results)
 
-    print(f"Average fitness: {original_average:.2f}->{synthetic_average:.2f}")
-    print(f"Playoff appearances: {original_playoffs}/5->{synthetic_playoffs}/5")
-    print(f"Championships: {original_championships}/5->{synthetic_championships}/5")
+    print(f"Average fitness: {original_average:.2f}->{mixed_average:.2f}")
+    print(f"Playoff appearances: {original_playoffs}/5->{mixed_playoffs}/5")
+    print(f"Championships: {original_championships}/5->{mixed_championships}/5")
 
 
 if __name__ == "__main__":

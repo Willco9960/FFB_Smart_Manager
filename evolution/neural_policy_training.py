@@ -1,6 +1,6 @@
 import copy
 import random
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import torch
 
@@ -28,6 +28,17 @@ class NeuralGenerationResult:
 class NeuralPolicyTrainingResult:
     generations: list[NeuralGenerationResult]
     best_agent: NeuralDraftAgent
+
+
+@dataclass
+class NeuralPolicySeasonScenario:
+    season: int
+    league: League
+    performances: list[WeeklyPlayerPerformance]
+    synthetic_performances: list[list[WeeklyPlayerPerformance]] = field(
+        default_factory=list
+    )
+    projection_service: WeeklyNeuralProjectionService | None = None
 
 
 def clone_policy_network(network: ManagerPolicyNetwork) -> ManagerPolicyNetwork:
@@ -136,6 +147,41 @@ def aggregate_scenario_evaluations(
     return aggregated_results
 
 
+def evaluate_agents_across_season_scenarios(
+    agents: list[NeuralDraftAgent],
+    scenarios: list[NeuralPolicySeasonScenario],
+    rounds: int,
+    lineup_rules: tuple[LineupSlot, ...],
+    seed: int,
+    transaction_genome: DraftStrategyGenome,
+) -> list[EvaluatedAgent]:
+    scenario_results = []
+    scenario_index = 0
+
+    for scenario in scenarios:
+        performances_scenarios = [
+            scenario.performances,
+            *scenario.synthetic_performances,
+        ]
+
+        for performances in performances_scenarios:
+            scenario_results.append(
+                evaluate_full_season_battle_royale(
+                    agents=agents,
+                    league=scenario.league,
+                    performances=performances,
+                    rounds=rounds,
+                    lineup_rules=lineup_rules,
+                    seed=seed + scenario_index,
+                    transaction_genome_fallback=transaction_genome,
+                    projection_service=scenario.projection_service,
+                )
+            )
+            scenario_index += 1
+
+    return aggregate_scenario_evaluations(agents, scenario_results)
+
+
 def train_neural_policy_on_seasons(
     initial_network: ManagerPolicyNetwork,
     league: League,
@@ -151,6 +197,43 @@ def train_neural_policy_on_seasons(
     synthetic_performances: list[list[WeeklyPlayerPerformance]] | None = None,
     projection_service: WeeklyNeuralProjectionService | None = None,
 ) -> NeuralPolicyTrainingResult:
+    return train_neural_policy_across_seasons(
+        initial_network=initial_network,
+        scenarios=[
+            NeuralPolicySeasonScenario(
+                season=0,
+                league=league,
+                performances=performances,
+                synthetic_performances=synthetic_performances or [],
+                projection_service=projection_service,
+            )
+        ],
+        transaction_genome=transaction_genome,
+        population_size=population_size,
+        generation_count=generation_count,
+        selection_count=selection_count,
+        mutation_strength=mutation_strength,
+        seed=seed,
+        rounds=rounds,
+        lineup_rules=lineup_rules,
+    )
+
+
+def train_neural_policy_across_seasons(
+    initial_network: ManagerPolicyNetwork,
+    scenarios: list[NeuralPolicySeasonScenario],
+    transaction_genome: DraftStrategyGenome,
+    population_size: int = 10,
+    generation_count: int = 2,
+    selection_count: int = 3,
+    mutation_strength: float = 0.02,
+    seed: int = 1,
+    rounds: int = 16,
+    lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+) -> NeuralPolicyTrainingResult:
+    if not scenarios:
+        raise ValueError("At least one season scenario is required.")
+
     rng = random.Random(seed)
     agents = [
         NeuralDraftAgent(
@@ -174,21 +257,14 @@ def train_neural_policy_on_seasons(
     generation_results = []
 
     for generation_number in range(1, generation_count + 1):
-        scenario_performances = [performances, *(synthetic_performances or [])]
-        scenario_results = [
-            evaluate_full_season_battle_royale(
-                agents=agents,
-                league=league,
-                performances=scenario,
-                rounds=rounds,
-                lineup_rules=lineup_rules,
-                seed=seed + generation_number + scenario_index,
-                transaction_genome_fallback=transaction_genome,
-                projection_service=projection_service,
-            )
-            for scenario_index, scenario in enumerate(scenario_performances)
-        ]
-        evaluated_agents = aggregate_scenario_evaluations(agents, scenario_results)
+        evaluated_agents = evaluate_agents_across_season_scenarios(
+            agents=agents,
+            scenarios=scenarios,
+            rounds=rounds,
+            lineup_rules=lineup_rules,
+            seed=seed + generation_number,
+            transaction_genome=transaction_genome,
+        )
         ranked_agents = rank_evaluated_agents(evaluated_agents)
         ranked_neural_agents = []
 
