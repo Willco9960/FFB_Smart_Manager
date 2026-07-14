@@ -45,3 +45,19 @@ def test_service_falls_back_to_existing_heuristic_for_unseen_player():
     prediction = service.predict_player(player, performances, week=2)
 
     assert prediction == 18.5
+
+
+def test_calibrated_weights_are_opt_in():
+    service = WeeklyNeuralProjectionService(
+        training_result=None,
+        predictions={(2, "Test RB", "RB"): 20.0},
+        neural_weights_by_position={"RB": 0.5},
+    )
+    player = Player(
+        name="Test RB",
+        position="RB",
+        team="ATL",
+        projected_score=210.0,
+    )
+
+    assert service.predict_player(player, [], week=2) == 20.0

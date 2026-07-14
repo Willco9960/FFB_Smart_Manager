@@ -17,7 +17,10 @@ from models.draft_projection_nn import (
     ProjectionTrainingResult,
     predict_points,
 )
-from models.weekly_projection_nn import convert_weekly_examples
+from models.weekly_projection_nn import (
+    calculate_weekly_heuristic_projection,
+    convert_weekly_examples,
+)
 
 DEFAULT_WEEKLY_MODEL_PATH = Path("data/models/weekly_projection_network.pt")
 
@@ -27,9 +30,16 @@ class WeeklyNeuralProjectionService:
         self,
         training_result: ProjectionTrainingResult,
         predictions: dict[tuple[int, str, str], float],
+        neural_weights_by_position: dict[str, float] | None = None,
+        use_calibrated_weights: bool = False,
     ):
         self.training_result = training_result
         self.predictions = predictions
+        self.neural_weights_by_position = (
+            neural_weights_by_position or {}
+            if use_calibrated_weights
+            else {}
+        )
 
     @classmethod
     def from_checkpoint(
@@ -37,6 +47,7 @@ class WeeklyNeuralProjectionService:
         model_path: Path,
         target_season: int,
         raw_data_dir=RAW_DATA_DIR,
+        use_calibrated_weights: bool = False,
     ) -> "WeeklyNeuralProjectionService":
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
         model = DraftProjectionNetwork(input_size=checkpoint["input_size"])
@@ -61,15 +72,34 @@ class WeeklyNeuralProjectionService:
             training_result,
             convert_weekly_examples(weekly_examples),
         )
+        neural_weights_by_position = {
+            position: float(weight)
+            for position, weight in checkpoint.get("neural_weights_by_position", {}).items()
+        }
+        applied_weights = neural_weights_by_position if use_calibrated_weights else {}
         prediction_map = {
             (example.week, example.player_name, example.position): round(
-                max(0.0, prediction),
+                max(
+                    0.0,
+                    (
+                        applied_weights.get(example.position, 1.0) * prediction
+                        + (
+                            1 - applied_weights.get(example.position, 1.0)
+                        )
+                        * calculate_weekly_heuristic_projection(example)
+                    ),
+                ),
                 2,
             )
             for example, prediction in zip(weekly_examples, predictions, strict=True)
         }
 
-        return cls(training_result, prediction_map)
+        return cls(
+            training_result,
+            prediction_map,
+            neural_weights_by_position,
+            use_calibrated_weights=use_calibrated_weights,
+        )
 
     def predict_player(
         self,
@@ -104,6 +134,7 @@ def load_weekly_projection_service(
     model_path: Path = DEFAULT_WEEKLY_MODEL_PATH,
     target_season: int | None = None,
     raw_data_dir=RAW_DATA_DIR,
+    use_calibrated_weights: bool = False,
 ) -> WeeklyNeuralProjectionService | None:
     if target_season is None or not model_path.exists():
         return None
@@ -112,4 +143,5 @@ def load_weekly_projection_service(
         model_path=model_path,
         target_season=target_season,
         raw_data_dir=raw_data_dir,
+        use_calibrated_weights=use_calibrated_weights,
     )
