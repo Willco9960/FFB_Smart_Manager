@@ -1,5 +1,7 @@
 import copy
 import random
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 import torch
@@ -39,6 +41,21 @@ class NeuralPolicySeasonScenario:
         default_factory=list
     )
     projection_service: WeeklyNeuralProjectionService | None = None
+
+
+@dataclass(frozen=True)
+class NeuralTrainingProgress:
+    generation_number: int
+    generation_count: int
+    scenario_number: int
+    scenario_count: int
+    status: str
+    elapsed_seconds: float
+    average_fitness: float | None = None
+    best_fitness: float | None = None
+
+
+ProgressCallback = Callable[[NeuralTrainingProgress], None]
 
 
 def clone_policy_network(network: ManagerPolicyNetwork) -> ManagerPolicyNetwork:
@@ -154,9 +171,15 @@ def evaluate_agents_across_season_scenarios(
     lineup_rules: tuple[LineupSlot, ...],
     seed: int,
     transaction_genome: DraftStrategyGenome,
+    generation_number: int = 1,
+    generation_count: int = 1,
+    progress_callback: ProgressCallback | None = None,
+    start_time: float | None = None,
 ) -> list[EvaluatedAgent]:
     scenario_results = []
     scenario_index = 0
+    scenario_count = sum(1 + len(scenario.synthetic_performances) for scenario in scenarios)
+    started_at = time.monotonic() if start_time is None else start_time
 
     for scenario in scenarios:
         performances_scenarios = [
@@ -165,6 +188,18 @@ def evaluate_agents_across_season_scenarios(
         ]
 
         for performances in performances_scenarios:
+            if progress_callback is not None:
+                progress_callback(
+                    NeuralTrainingProgress(
+                        generation_number=generation_number,
+                        generation_count=generation_count,
+                        scenario_number=scenario_index + 1,
+                        scenario_count=scenario_count,
+                        status="starting",
+                        elapsed_seconds=time.monotonic() - started_at,
+                    )
+                )
+
             scenario_results.append(
                 evaluate_full_season_battle_royale(
                     agents=agents,
@@ -178,6 +213,18 @@ def evaluate_agents_across_season_scenarios(
                 )
             )
             scenario_index += 1
+
+            if progress_callback is not None:
+                progress_callback(
+                    NeuralTrainingProgress(
+                        generation_number=generation_number,
+                        generation_count=generation_count,
+                        scenario_number=scenario_index,
+                        scenario_count=scenario_count,
+                        status="complete",
+                        elapsed_seconds=time.monotonic() - started_at,
+                    )
+                )
 
     return aggregate_scenario_evaluations(agents, scenario_results)
 
@@ -196,6 +243,7 @@ def train_neural_policy_on_seasons(
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     synthetic_performances: list[list[WeeklyPlayerPerformance]] | None = None,
     projection_service: WeeklyNeuralProjectionService | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> NeuralPolicyTrainingResult:
     return train_neural_policy_across_seasons(
         initial_network=initial_network,
@@ -216,6 +264,7 @@ def train_neural_policy_on_seasons(
         seed=seed,
         rounds=rounds,
         lineup_rules=lineup_rules,
+        progress_callback=progress_callback,
     )
 
 
@@ -230,6 +279,7 @@ def train_neural_policy_across_seasons(
     seed: int = 1,
     rounds: int = 16,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    progress_callback: ProgressCallback | None = None,
 ) -> NeuralPolicyTrainingResult:
     if not scenarios:
         raise ValueError("At least one season scenario is required.")
@@ -255,6 +305,7 @@ def train_neural_policy_across_seasons(
         )
 
     generation_results = []
+    started_at = time.monotonic()
 
     for generation_number in range(1, generation_count + 1):
         evaluated_agents = evaluate_agents_across_season_scenarios(
@@ -264,6 +315,10 @@ def train_neural_policy_across_seasons(
             lineup_rules=lineup_rules,
             seed=seed + generation_number,
             transaction_genome=transaction_genome,
+            generation_number=generation_number,
+            generation_count=generation_count,
+            progress_callback=progress_callback,
+            start_time=started_at,
         )
         ranked_agents = rank_evaluated_agents(evaluated_agents)
         ranked_neural_agents = []
@@ -284,6 +339,20 @@ def train_neural_policy_across_seasons(
                 evaluated_agents=evaluated_agents,
             )
         )
+
+        if progress_callback is not None:
+            progress_callback(
+                NeuralTrainingProgress(
+                    generation_number=generation_number,
+                    generation_count=generation_count,
+                    scenario_number=0,
+                    scenario_count=0,
+                    status="generation_complete",
+                    elapsed_seconds=time.monotonic() - started_at,
+                    average_fitness=generation_results[-1].average_fitness,
+                    best_fitness=generation_results[-1].best_fitness,
+                )
+            )
         agents = create_next_neural_generation(
             selected_agents=selected_agents,
             population_size=population_size,

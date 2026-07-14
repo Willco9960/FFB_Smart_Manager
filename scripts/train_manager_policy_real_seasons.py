@@ -4,6 +4,7 @@ from pathlib import Path
 from evolution.genome import DraftStrategyGenome, create_random_genome
 from evolution.neural_policy_training import (
     NeuralPolicySeasonScenario,
+    NeuralTrainingProgress,
     train_neural_policy_across_seasons,
 )
 from fantasy_engine.league import League
@@ -78,6 +79,33 @@ def create_season_scenario(season: int) -> NeuralPolicySeasonScenario:
     )
 
 
+def format_elapsed(seconds: float) -> str:
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def print_training_progress(progress: NeuralTrainingProgress) -> None:
+    elapsed = format_elapsed(progress.elapsed_seconds)
+
+    if progress.status == "generation_complete":
+        print(
+            f"\nGeneration {progress.generation_number}/{progress.generation_count} complete | "
+            f"average {progress.average_fitness:.2f} | "
+            f"best {progress.best_fitness:.2f} | elapsed {elapsed}",
+            flush=True,
+        )
+        return
+
+    marker = "Starting" if progress.status == "starting" else "Completed"
+    print(
+        f"[{marker}] generation {progress.generation_number}/{progress.generation_count} | "
+        f"scenario {progress.scenario_number}/{progress.scenario_count} | "
+        f"elapsed {elapsed}",
+        flush=True,
+    )
+
+
 def main():
     args = parse_args()
     initial_policy_path, initial_network = load_initial_policy()
@@ -93,6 +121,7 @@ def main():
         seed=2021,
         rounds=16,
         lineup_rules=ESPN_DEFAULT_LINEUP_RULES,
+        progress_callback=print_training_progress,
     )
     save_manager_policy_network(training_result.best_agent.policy_network, OUTPUT_PATH)
 
