@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from agents.genome_draft_agent import GenomeDraftAgent
 from agents.trade_agent import GenomeTradeAgent
 from agents.waiver_agent import GenomeWaiverAgent
@@ -13,6 +15,7 @@ from fantasy_engine.weekly_season_simulation import (
     format_week_by_week_report,
     run_historical_regular_season,
 )
+from models.weekly_projection_service import load_weekly_projection_service
 
 
 def create_2021_historical_league() -> League:
@@ -53,18 +56,32 @@ def main():
         for team_name, draft_agent in draft_agents.items()
     }
     performances = load_weekly_performances(2021)
+    projection_service = load_weekly_projection_service(
+        model_path=Path("data/models/weekly_projection_network.pt"),
+        target_season=2021,
+    )
     result = run_historical_regular_season(
         league,
         performances,
         waiver_agents=waiver_agents,
         trade_agents=trade_agents,
+        projection_service=projection_service,
     )
-    playoff_result = simulate_espn_six_team_playoffs(league, result.standings, performances)
+    playoff_result = simulate_espn_six_team_playoffs(
+        league,
+        result.standings,
+        performances,
+        projection_service=projection_service,
+    )
 
     print("2021 historical weekly regular-season simulation complete")
     print(
-        "Lineups adapt from prior-week performance; "
+        "Lineups adapt from the weekly neural projection model when available; "
         "historical weekly scores are applied afterward."
+    )
+    print(
+        "Projection source: "
+        + ("weekly neural network" if projection_service else "heuristic fallback")
     )
     print("Waiver claims process before each week's lineup decisions.")
     print("Mutually beneficial trade proposals process before weekly waivers.")

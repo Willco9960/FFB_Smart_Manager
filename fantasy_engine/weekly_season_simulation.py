@@ -27,6 +27,7 @@ from fantasy_engine.transactions import (
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_projection import create_weekly_projected_roster
 from fantasy_engine.weekly_simulation import simulate_historical_week
+from models.weekly_projection_service import WeeklyNeuralProjectionService
 
 
 @dataclass
@@ -51,6 +52,7 @@ def run_historical_regular_season(
     waiver_agents: dict[str, WaiverAgent] | None = None,
     trade_agents: dict[str, TradeAgent] | None = None,
     lineup_agents: dict[str, LineupAgent] | None = None,
+    projection_service: WeeklyNeuralProjectionService | None = None,
 ) -> RegularSeasonSimulationResult:
     team_names = [team.name for team in league.teams]
     schedule = create_regular_season_schedule(team_names, rules)
@@ -68,6 +70,7 @@ def run_historical_regular_season(
             performances=performances,
             week=week,
             trade_agents=trade_agents,
+            projection_service=projection_service,
         )
         weekly_transactions[week].extend(run_weekly_waivers(
             league=league,
@@ -75,6 +78,7 @@ def run_historical_regular_season(
             performances=performances,
             week=week,
             waiver_agents=waiver_agents,
+            projection_service=projection_service,
         ))
         transaction_tracker.register(weekly_transactions[week])
         weekly_scores[week] = simulate_historical_week(
@@ -85,6 +89,7 @@ def run_historical_regular_season(
             week=week,
             lineup_rules=lineup_rules,
             lineup_agents=lineup_agents,
+            projection_service=projection_service,
         )
         weekly_points_by_player = {
             (performance.player_name, performance.position): performance.fantasy_points
@@ -114,15 +119,23 @@ def run_weekly_waivers(
     performances: list[WeeklyPlayerPerformance],
     week: int,
     waiver_agents: dict[str, WaiverAgent] | None,
+    projection_service: WeeklyNeuralProjectionService | None = None,
 ) -> list[Transaction]:
     if waiver_agents is None:
         return []
 
-    projected_available_players = create_weekly_projected_roster(
-        league.available_players,
-        performances,
-        week,
-    )
+    if projection_service is None:
+        projected_available_players = create_weekly_projected_roster(
+            league.available_players,
+            performances,
+            week,
+        )
+    else:
+        projected_available_players = projection_service.project_roster(
+            league.available_players,
+            performances,
+            week,
+        )
     projected_players_by_key = {
         (player.name, player.position): player for player in projected_available_players
     }
@@ -134,7 +147,14 @@ def run_weekly_waivers(
         if waiver_agent is None:
             continue
 
-        projected_roster = create_weekly_projected_roster(team.roster, performances, week)
+        if projection_service is None:
+            projected_roster = create_weekly_projected_roster(team.roster, performances, week)
+        else:
+            projected_roster = projection_service.project_roster(
+                team.roster,
+                performances,
+                week,
+            )
         projected_team = replace(team, roster=projected_roster)
         projected_claim = waiver_agent.choose_waiver_claim(
             team=projected_team,
@@ -185,17 +205,28 @@ def run_weekly_trades(
     performances: list[WeeklyPlayerPerformance],
     week: int,
     trade_agents: dict[str, TradeAgent] | None,
+    projection_service: WeeklyNeuralProjectionService | None = None,
 ) -> list[Transaction]:
     if trade_agents is None:
         return []
 
-    projected_teams = [
-        replace(
-            team,
-            roster=create_weekly_projected_roster(team.roster, performances, week),
-        )
-        for team in league.teams
-    ]
+    projected_teams = []
+
+    for team in league.teams:
+        if projection_service is None:
+            projected_roster = create_weekly_projected_roster(
+                team.roster,
+                performances,
+                week,
+            )
+        else:
+            projected_roster = projection_service.project_roster(
+                team.roster,
+                performances,
+                week,
+            )
+
+        projected_teams.append(replace(team, roster=projected_roster))
     projected_teams_by_name = {team.name: team for team in projected_teams}
     original_teams_by_name = {team.name: team for team in league.teams}
     projected_league = replace(league, teams=projected_teams)

@@ -12,6 +12,7 @@ from fantasy_engine.season import (
 from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_simulation import get_weekly_points_by_player, score_weekly_team
+from models.weekly_projection_service import WeeklyNeuralProjectionService
 
 
 @dataclass(frozen=True)
@@ -53,18 +54,36 @@ def simulate_playoff_game(
     week: int,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     lineup_agents: dict[str, LineupAgent] | None = None,
+    projection_service: WeeklyNeuralProjectionService | None = None,
 ) -> PlayoffGameResult:
     weekly_points = get_weekly_points_by_player(performances, week)
     first_team = seeded_teams[first_seed - 1]
     second_team = seeded_teams[second_seed - 1]
+    first_projected_team = first_team
+    second_projected_team = second_team
+
+    if projection_service is not None:
+        first_projected_team = Team(
+            name=first_team.name,
+            roster=projection_service.project_roster(first_team.roster, performances, week),
+        )
+        second_projected_team = Team(
+            name=second_team.name,
+            roster=projection_service.project_roster(
+                second_team.roster,
+                performances,
+                week,
+            ),
+        )
+
     _, first_team_score = score_weekly_team(
-        first_team,
+        first_projected_team,
         weekly_points,
         lineup_rules,
         None if lineup_agents is None else lineup_agents.get(first_team.name),
     )
     _, second_team_score = score_weekly_team(
-        second_team,
+        second_projected_team,
         weekly_points,
         lineup_rules,
         None if lineup_agents is None else lineup_agents.get(second_team.name),
@@ -91,13 +110,14 @@ def simulate_espn_six_team_playoffs(
     rules: ESPNLeagueRules = ESPN_TEN_TEAM_DEFAULT_RULES,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     lineup_agents: dict[str, LineupAgent] | None = None,
+    projection_service: WeeklyNeuralProjectionService | None = None,
 ) -> PlayoffSimulationResult:
     seeded_teams = get_playoff_teams(league, standings, rules)
     first_round_game_one = simulate_playoff_game(
-        3, 6, seeded_teams, performances, 15, lineup_rules, lineup_agents
+        3, 6, seeded_teams, performances, 15, lineup_rules, lineup_agents, projection_service
     )
     first_round_game_two = simulate_playoff_game(
-        4, 5, seeded_teams, performances, 15, lineup_rules, lineup_agents
+        4, 5, seeded_teams, performances, 15, lineup_rules, lineup_agents, projection_service
     )
     lowest_remaining_seed = max(first_round_game_one.winner_seed, first_round_game_two.winner_seed)
     other_remaining_seed = min(first_round_game_one.winner_seed, first_round_game_two.winner_seed)
@@ -109,6 +129,7 @@ def simulate_espn_six_team_playoffs(
         16,
         lineup_rules,
         lineup_agents,
+        projection_service,
     )
     semifinal_game_two = simulate_playoff_game(
         2,
@@ -118,6 +139,7 @@ def simulate_espn_six_team_playoffs(
         16,
         lineup_rules,
         lineup_agents,
+        projection_service,
     )
     championship_game = simulate_playoff_game(
         semifinal_game_one.winner_seed,
@@ -127,6 +149,7 @@ def simulate_espn_six_team_playoffs(
         17,
         lineup_rules,
         lineup_agents,
+        projection_service,
     )
     champion = seeded_teams[championship_game.winner_seed - 1]
 
