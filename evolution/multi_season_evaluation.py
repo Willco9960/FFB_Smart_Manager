@@ -8,6 +8,7 @@ from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_DEFAULT_LINEUP_RULES, LineupSlot
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from models.manager_policy_nn import ManagerPolicyNetwork
+from models.weekly_projection_service import WeeklyNeuralProjectionService
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ def evaluate_neural_manager_for_season(
     performances: list[WeeklyPlayerPerformance],
     lineup_rules: tuple[LineupSlot, ...] = ESPN_DEFAULT_LINEUP_RULES,
     seed: int = 1,
+    projection_service: WeeklyNeuralProjectionService | None = None,
 ) -> SeasonEvaluation:
     neural_agent = NeuralDraftAgent(
         policy_network=policy_network,
@@ -64,6 +66,7 @@ def evaluate_neural_manager_for_season(
         lineup_rules=lineup_rules,
         seed=seed,
         transaction_genome_fallback=transaction_genome,
+        projection_service=projection_service,
     )
     neural_result = next(
         evaluated_agent

@@ -23,6 +23,7 @@ from fantasy_engine.season import (
 )
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_season_simulation import run_historical_regular_season
+from models.weekly_projection_service import WeeklyNeuralProjectionService
 
 WEEKLY_WIN_REWARD = 10.0
 POINTS_FOR_WEIGHT = 0.1
@@ -89,6 +90,7 @@ def evaluate_full_season_battle_royale(
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     seed: int = 1,
     transaction_genome_fallback=None,
+    projection_service: WeeklyNeuralProjectionService | None = None,
 ) -> list[EvaluatedAgent]:
     if len(agents) % len(league.teams) != 0:
         raise ValueError("Population size must be divisible by the league team count.")
@@ -146,6 +148,7 @@ def evaluate_full_season_battle_royale(
             waiver_agents=waiver_agents,
             trade_agents=trade_agents,
             lineup_agents=lineup_agents,
+            projection_service=projection_service,
         )
         playoff_result = simulate_espn_six_team_playoffs(
             league=simulated_league,
@@ -154,6 +157,7 @@ def evaluate_full_season_battle_royale(
             rules=rules,
             lineup_rules=lineup_rules,
             lineup_agents=lineup_agents,
+            projection_service=projection_service,
         )
         ranked_standings = rank_standings(regular_season.standings)
         transaction_rewards = {}
