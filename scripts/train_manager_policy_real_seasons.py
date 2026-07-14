@@ -1,0 +1,117 @@
+import argparse
+from pathlib import Path
+
+from evolution.genome import DraftStrategyGenome, create_random_genome
+from evolution.neural_policy_training import (
+    NeuralPolicySeasonScenario,
+    train_neural_policy_across_seasons,
+)
+from fantasy_engine.league import League
+from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
+from fantasy_engine.lineup import ESPN_DEFAULT_LINEUP_RULES
+from fantasy_engine.team import Team
+from fantasy_engine.weekly_data import load_weekly_performances
+from models.draft_projection_nn import DEFAULT_MODEL_PATH
+from models.manager_policy_nn import load_manager_policy_network, save_manager_policy_network
+from models.projection_service import load_neural_projection_service
+from models.weekly_projection_service import load_weekly_projection_service
+
+INITIAL_POLICY_PATHS = (
+    Path("data/models/manager_policy_full_season.pt"),
+    Path("data/models/manager_policy_network.pt"),
+)
+OUTPUT_PATH = Path("data/models/manager_policy_real_seasons.pt")
+TRAINING_SEASONS = (2021, 2022, 2023, 2024)
+HOLDOUT_SEASON = 2025
+WEEKLY_MODEL_PATH = Path("data/models/weekly_projection_network.pt")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train a manager on real historical seasons.")
+    parser.add_argument("--population", type=int, default=10)
+    parser.add_argument("--generations", type=int, default=2)
+    parser.add_argument("--selection", type=int, default=3)
+    parser.add_argument("--mutation", type=float, default=0.02)
+    return parser.parse_args()
+
+
+def load_initial_policy():
+    for path in INITIAL_POLICY_PATHS:
+        if path.exists():
+            return path, load_manager_policy_network(path)
+
+    raise FileNotFoundError("No initial manager policy checkpoint was found.")
+
+
+def load_transaction_genome() -> DraftStrategyGenome:
+    path = Path("data/evolution/best_full_season_2021_genome.json")
+
+    if path.exists():
+        return DraftStrategyGenome.from_json(path.read_text(encoding="utf-8"))
+
+    return create_random_genome(seed=2021)
+
+
+def create_season_scenario(season: int) -> NeuralPolicySeasonScenario:
+    league = League(
+        name=f"{season} Real Training League",
+        teams=[Team(name=f"Real Training Team {number}") for number in range(1, 11)],
+        available_players=load_leakage_safe_player_pool(
+            projection_season=season - 1,
+            actual_season=season,
+            include_special_teams=True,
+        )[:250],
+    )
+    draft_projection_service = load_neural_projection_service(DEFAULT_MODEL_PATH)
+
+    if draft_projection_service is not None:
+        league = draft_projection_service.project_league(league)
+
+    return NeuralPolicySeasonScenario(
+        season=season,
+        league=league,
+        performances=load_weekly_performances(season, include_special_teams=True),
+        projection_service=load_weekly_projection_service(
+            model_path=WEEKLY_MODEL_PATH,
+            target_season=season,
+        ),
+    )
+
+
+def main():
+    args = parse_args()
+    initial_policy_path, initial_network = load_initial_policy()
+    scenarios = [create_season_scenario(season) for season in TRAINING_SEASONS]
+    training_result = train_neural_policy_across_seasons(
+        initial_network=initial_network,
+        scenarios=scenarios,
+        transaction_genome=load_transaction_genome(),
+        population_size=args.population,
+        generation_count=args.generations,
+        selection_count=args.selection,
+        mutation_strength=args.mutation,
+        seed=2021,
+        rounds=16,
+        lineup_rules=ESPN_DEFAULT_LINEUP_RULES,
+    )
+    save_manager_policy_network(training_result.best_agent.policy_network, OUTPUT_PATH)
+
+    print("Real-season neural manager training complete")
+    print(f"Initial policy: {initial_policy_path}")
+    print(f"Training seasons: {TRAINING_SEASONS}")
+    print(f"Holdout season: {HOLDOUT_SEASON}")
+    print(f"Population: {args.population}")
+    print(f"Generations: {args.generations}")
+
+    for generation in training_result.generations:
+        print(
+            f"Generation {generation.generation_number}: "
+            f"average fitness = {generation.average_fitness:.2f}, "
+            f"best fitness = {generation.best_fitness:.2f}"
+        )
+
+    print(f"Policy model saved to: {OUTPUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()
