@@ -117,6 +117,13 @@ def print_training_progress(progress: NeuralTrainingProgress) -> None:
             f"best {progress.best_fitness:.2f} | elapsed {elapsed}",
             flush=True,
         )
+        print(
+            f"  avg wins {progress.average_wins:.2f} | "
+            f"avg PF {progress.average_points_for:.2f} | "
+            f"playoffs {progress.playoff_rate:.1%} | "
+            f"championships {progress.championship_count}",
+            flush=True,
+        )
         return
 
     marker = "Starting" if progress.status == "starting" else "Completed"
@@ -163,7 +170,10 @@ def main():
         print(
             f"Generation {generation.generation_number}: "
             f"average fitness = {generation.average_fitness:.2f}, "
-            f"best fitness = {generation.best_fitness:.2f}"
+            f"best fitness = {generation.best_fitness:.2f}, "
+            f"average wins = {generation.average_wins:.2f}, "
+            f"playoff rate = {generation.playoff_rate:.1%}, "
+            f"championships = {generation.championship_count}"
         )
 
     print(f"Policy model saved to: {OUTPUT_PATH}")

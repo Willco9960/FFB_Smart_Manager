@@ -22,6 +22,10 @@ class NeuralGenerationResult:
     generation_number: int
     best_fitness: float
     average_fitness: float
+    average_wins: float
+    average_points_for: float
+    playoff_rate: float
+    championship_count: int
     best_agent: NeuralDraftAgent
     evaluated_agents: list[EvaluatedAgent]
 
@@ -37,9 +41,7 @@ class NeuralPolicySeasonScenario:
     season: int
     league: League
     performances: list[WeeklyPlayerPerformance]
-    synthetic_performances: list[list[WeeklyPlayerPerformance]] = field(
-        default_factory=list
-    )
+    synthetic_performances: list[list[WeeklyPlayerPerformance]] = field(default_factory=list)
     projection_service: WeeklyNeuralProjectionService | None = None
 
 
@@ -53,6 +55,10 @@ class NeuralTrainingProgress:
     elapsed_seconds: float
     average_fitness: float | None = None
     best_fitness: float | None = None
+    average_wins: float | None = None
+    average_points_for: float | None = None
+    playoff_rate: float | None = None
+    championship_count: int | None = None
 
 
 ProgressCallback = Callable[[NeuralTrainingProgress], None]
@@ -151,9 +157,7 @@ def aggregate_scenario_evaluations(
         if not agent_results:
             raise ValueError("Every agent must have at least one scenario evaluation.")
 
-        average_fitness = sum(result.fitness_score for result in agent_results) / len(
-            agent_results
-        )
+        average_fitness = sum(result.fitness_score for result in agent_results) / len(agent_results)
         aggregated_results.append(
             replace(
                 agent_results[0],
@@ -327,14 +331,28 @@ def train_neural_policy_across_seasons(
             ranked_neural_agents.append(evaluated_agent.agent)
 
         selected_agents = ranked_neural_agents[:selection_count]
+        average_fitness = sum(
+            evaluated_agent.fitness_score for evaluated_agent in evaluated_agents
+        ) / len(evaluated_agents)
+        average_wins = sum(
+            evaluated_agent.regular_season_wins for evaluated_agent in evaluated_agents
+        ) / len(evaluated_agents)
+        average_points_for = sum(
+            evaluated_agent.points_for for evaluated_agent in evaluated_agents
+        ) / len(evaluated_agents)
+        playoff_rate = sum(
+            evaluated_agent.playoff_seed is not None for evaluated_agent in evaluated_agents
+        ) / len(evaluated_agents)
+        championship_count = sum(evaluated_agent.champion for evaluated_agent in evaluated_agents)
         generation_results.append(
             NeuralGenerationResult(
                 generation_number=generation_number,
                 best_fitness=ranked_agents[0].fitness_score,
-                average_fitness=sum(
-                    evaluated_agent.fitness_score for evaluated_agent in evaluated_agents
-                )
-                / len(evaluated_agents),
+                average_fitness=average_fitness,
+                average_wins=average_wins,
+                average_points_for=average_points_for,
+                playoff_rate=playoff_rate,
+                championship_count=championship_count,
                 best_agent=selected_agents[0],
                 evaluated_agents=evaluated_agents,
             )
@@ -351,6 +369,10 @@ def train_neural_policy_across_seasons(
                     elapsed_seconds=time.monotonic() - started_at,
                     average_fitness=generation_results[-1].average_fitness,
                     best_fitness=generation_results[-1].best_fitness,
+                    average_wins=generation_results[-1].average_wins,
+                    average_points_for=generation_results[-1].average_points_for,
+                    playoff_rate=generation_results[-1].playoff_rate,
+                    championship_count=generation_results[-1].championship_count,
                 )
             )
         agents = create_next_neural_generation(
