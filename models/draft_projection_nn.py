@@ -134,8 +134,7 @@ def train_projection_network(
         if validation_loss < best_validation_loss:
             best_validation_loss = validation_loss
             best_state = {
-                name: value.detach().cpu().clone()
-                for name, value in model.state_dict().items()
+                name: value.detach().cpu().clone() for name, value in model.state_dict().items()
             }
             epochs_without_improvement = 0
         else:
@@ -190,6 +189,7 @@ def calculate_mean_absolute_error(
 def save_projection_network(
     training_result: ProjectionTrainingResult,
     output_path: Path = DEFAULT_MODEL_PATH,
+    training_seasons: tuple[int, ...] | None = None,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -200,6 +200,8 @@ def save_projection_network(
             "feature_standard_deviations": training_result.feature_scaler.standard_deviations,
             "target_mean": training_result.target_mean,
             "target_standard_deviation": training_result.target_standard_deviation,
+            "training_seasons": list(training_seasons or []),
+            "max_training_season": max(training_seasons) if training_seasons else None,
         },
         output_path,
     )

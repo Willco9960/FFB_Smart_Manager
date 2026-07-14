@@ -10,7 +10,10 @@ from fantasy_engine.weekly_projection import (
     calculate_weekly_projection,
     get_player_history_before_week,
 )
-from fantasy_engine.weekly_projection_dataset import load_weekly_projection_examples
+from fantasy_engine.weekly_projection_dataset import (
+    WEEKLY_PROJECTION_FEATURE_NAMES,
+    load_weekly_projection_examples,
+)
 from models.draft_projection_nn import (
     DraftProjectionNetwork,
     FeatureScaler,
@@ -36,9 +39,7 @@ class WeeklyNeuralProjectionService:
         self.training_result = training_result
         self.predictions = predictions
         self.neural_weights_by_position = (
-            neural_weights_by_position or {}
-            if use_calibrated_weights
-            else {}
+            neural_weights_by_position or {} if use_calibrated_weights else {}
         )
 
     @classmethod
@@ -83,9 +84,7 @@ class WeeklyNeuralProjectionService:
                     0.0,
                     (
                         applied_weights.get(example.position, 1.0) * prediction
-                        + (
-                            1 - applied_weights.get(example.position, 1.0)
-                        )
+                        + (1 - applied_weights.get(example.position, 1.0))
                         * calculate_weekly_heuristic_projection(example)
                     ),
                 ),
@@ -137,6 +136,20 @@ def load_weekly_projection_service(
     use_calibrated_weights: bool = False,
 ) -> WeeklyNeuralProjectionService | None:
     if target_season is None or not model_path.exists():
+        return None
+
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+    checkpoint_features = tuple(checkpoint.get("feature_names", ()))
+
+    if checkpoint_features and checkpoint_features != WEEKLY_PROJECTION_FEATURE_NAMES:
+        return None
+
+    max_training_season = checkpoint.get("max_training_season")
+
+    if max_training_season is None:
+        return None
+
+    if target_season <= int(max_training_season):
         return None
 
     return WeeklyNeuralProjectionService.from_checkpoint(

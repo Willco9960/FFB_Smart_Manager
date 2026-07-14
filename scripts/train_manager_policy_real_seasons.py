@@ -7,6 +7,10 @@ from evolution.neural_policy_training import (
     NeuralTrainingProgress,
     train_neural_policy_across_seasons,
 )
+from fantasy_engine.historical_seasons import (
+    EARLIEST_RELIABLE_SEASON,
+    get_training_seasons,
+)
 from fantasy_engine.league import League
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
 from fantasy_engine.lineup import ESPN_DEFAULT_LINEUP_RULES
@@ -22,9 +26,13 @@ INITIAL_POLICY_PATHS = (
     Path("data/models/manager_policy_network.pt"),
 )
 OUTPUT_PATH = Path("data/models/manager_policy_real_seasons.pt")
-TRAINING_SEASONS = (2021, 2022, 2023, 2024)
+TRAINING_START_SEASON = EARLIEST_RELIABLE_SEASON
+TRAINING_END_SEASON = 2024
+TRAINING_SEASONS = get_training_seasons(TRAINING_START_SEASON, TRAINING_END_SEASON)
 HOLDOUT_SEASON = 2025
 WEEKLY_MODEL_PATH = Path("data/models/weekly_projection_network.pt")
+DRAFT_MODEL_MIN_TARGET_SEASON = 2020
+WEEKLY_MODEL_MIN_TARGET_SEASON = 2020
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +41,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generations", type=int, default=2)
     parser.add_argument("--selection", type=int, default=3)
     parser.add_argument("--mutation", type=float, default=0.02)
+    parser.add_argument("--start-season", type=int, default=TRAINING_START_SEASON)
+    parser.add_argument("--end-season", type=int, default=TRAINING_END_SEASON)
+    parser.add_argument("--holdout-season", type=int, default=HOLDOUT_SEASON)
     return parser.parse_args()
 
 
@@ -63,7 +74,21 @@ def create_season_scenario(season: int) -> NeuralPolicySeasonScenario:
             include_special_teams=True,
         )[:250],
     )
-    draft_projection_service = load_neural_projection_service(DEFAULT_MODEL_PATH)
+    draft_projection_service = None
+
+    if season >= DRAFT_MODEL_MIN_TARGET_SEASON:
+        draft_projection_service = load_neural_projection_service(
+            DEFAULT_MODEL_PATH,
+            target_season=season,
+        )
+
+    weekly_projection_service = None
+
+    if season >= WEEKLY_MODEL_MIN_TARGET_SEASON:
+        weekly_projection_service = load_weekly_projection_service(
+            model_path=WEEKLY_MODEL_PATH,
+            target_season=season,
+        )
 
     if draft_projection_service is not None:
         league = draft_projection_service.project_league(league)
@@ -72,10 +97,7 @@ def create_season_scenario(season: int) -> NeuralPolicySeasonScenario:
         season=season,
         league=league,
         performances=load_weekly_performances(season, include_special_teams=True),
-        projection_service=load_weekly_projection_service(
-            model_path=WEEKLY_MODEL_PATH,
-            target_season=season,
-        ),
+        projection_service=weekly_projection_service,
     )
 
 
@@ -108,8 +130,13 @@ def print_training_progress(progress: NeuralTrainingProgress) -> None:
 
 def main():
     args = parse_args()
+    training_seasons = get_training_seasons(args.start_season, args.end_season)
+
+    if args.holdout_season <= max(training_seasons):
+        raise ValueError("Holdout season must be after every training season.")
+
     initial_policy_path, initial_network = load_initial_policy()
-    scenarios = [create_season_scenario(season) for season in TRAINING_SEASONS]
+    scenarios = [create_season_scenario(season) for season in training_seasons]
     training_result = train_neural_policy_across_seasons(
         initial_network=initial_network,
         scenarios=scenarios,
@@ -127,8 +154,8 @@ def main():
 
     print("Real-season neural manager training complete")
     print(f"Initial policy: {initial_policy_path}")
-    print(f"Training seasons: {TRAINING_SEASONS}")
-    print(f"Holdout season: {HOLDOUT_SEASON}")
+    print(f"Training seasons: {training_seasons}")
+    print(f"Holdout season: {args.holdout_season}")
     print(f"Population: {args.population}")
     print(f"Generations: {args.generations}")
 

@@ -1,3 +1,6 @@
+import argparse
+
+from fantasy_engine.historical_seasons import EARLIEST_RELIABLE_SEASON
 from fantasy_engine.weekly_projection_dataset import load_weekly_projection_examples
 from models.draft_projection_nn import calculate_mean_absolute_error, predict_points
 from models.weekly_projection_nn import (
@@ -8,18 +11,41 @@ from models.weekly_projection_nn import (
     train_weekly_projection_network,
 )
 
-TRAINING_SEASONS = [2021, 2022, 2023]
-VALIDATION_SEASON = 2024
-TEST_SEASON = 2025
+TRAINING_START_SEASON = EARLIEST_RELIABLE_SEASON
+TRAINING_END_SEASON = 2019
+VALIDATION_SEASON = 2020
+TEST_SEASON = 2021
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train a leakage-safe weekly projection network.")
+    parser.add_argument("--train-start", type=int, default=TRAINING_START_SEASON)
+    parser.add_argument("--train-end", type=int, default=TRAINING_END_SEASON)
+    parser.add_argument("--validation-season", type=int, default=VALIDATION_SEASON)
+    parser.add_argument("--test-season", type=int, default=TEST_SEASON)
+    return parser.parse_args()
 
 
 def main():
-    examples = load_weekly_projection_examples(
-        TRAINING_SEASONS + [VALIDATION_SEASON, TEST_SEASON]
-    )
-    training_examples = [example for example in examples if example.season in TRAINING_SEASONS]
-    validation_examples = [example for example in examples if example.season == VALIDATION_SEASON]
-    test_examples = [example for example in examples if example.season == TEST_SEASON]
+    args = parse_args()
+    training_seasons = list(range(args.train_start, args.train_end + 1))
+
+    if not training_seasons:
+        raise ValueError("At least one weekly projection training season is required.")
+
+    if args.train_end >= args.validation_season:
+        raise ValueError("Training seasons must end before the validation season.")
+
+    if args.validation_season >= args.test_season:
+        raise ValueError("Validation season must be before the test season.")
+
+    target_seasons = training_seasons + [args.validation_season, args.test_season]
+    examples = load_weekly_projection_examples(target_seasons)
+    training_examples = [example for example in examples if example.season in training_seasons]
+    validation_examples = [
+        example for example in examples if example.season == args.validation_season
+    ]
+    test_examples = [example for example in examples if example.season == args.test_season]
     training_result = train_weekly_projection_network(
         training_examples,
         validation_examples,
@@ -62,9 +88,13 @@ def main():
     model_path = save_weekly_projection_network(
         training_result,
         neural_weights_by_position=neural_weights_by_position,
+        training_seasons=tuple(training_seasons),
     )
 
     print("Weekly projection network training complete")
+    print(f"Training seasons: {tuple(training_seasons)}")
+    print(f"Validation season: {args.validation_season}")
+    print(f"Test season: {args.test_season}")
     print(f"Training examples: {len(training_examples)}")
     print(f"Validation examples: {len(validation_examples)}")
     print(f"Test examples: {len(test_examples)}")

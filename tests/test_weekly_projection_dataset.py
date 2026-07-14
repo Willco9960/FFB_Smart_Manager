@@ -22,7 +22,7 @@ def row(**values: str) -> dict[str, str]:
 
 
 def test_weekly_features_have_documented_feature_count():
-    assert len(WEEKLY_PROJECTION_FEATURE_NAMES) == 20
+    assert len(WEEKLY_PROJECTION_FEATURE_NAMES) == 27
 
 
 def test_opponent_defensive_signal_uses_only_prior_weeks():

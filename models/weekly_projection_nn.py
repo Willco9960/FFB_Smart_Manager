@@ -81,8 +81,7 @@ def calibrate_neural_weights_by_position(
                 abs(
                     (
                         neural_weight * neural_prediction
-                        + (1 - neural_weight)
-                        * calculate_weekly_heuristic_projection(example)
+                        + (1 - neural_weight) * calculate_weekly_heuristic_projection(example)
                     )
                     - example.target_points
                 )
@@ -112,9 +111,7 @@ def predict_calibrated_weekly_points(
         round(
             (
                 neural_weights_by_position.get(example.position, 1.0) * neural_prediction
-                + (
-                    1 - neural_weights_by_position.get(example.position, 1.0)
-                )
+                + (1 - neural_weights_by_position.get(example.position, 1.0))
                 * calculate_weekly_heuristic_projection(example)
             ),
             2,
@@ -127,6 +124,7 @@ def save_weekly_projection_network(
     training_result: ProjectionTrainingResult,
     output_path: Path = DEFAULT_WEEKLY_MODEL_PATH,
     neural_weights_by_position: dict[str, float] | None = None,
+    training_seasons: tuple[int, ...] | None = None,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -139,6 +137,8 @@ def save_weekly_projection_network(
             "target_standard_deviation": training_result.target_standard_deviation,
             "feature_names": list(WEEKLY_PROJECTION_FEATURE_NAMES),
             "neural_weights_by_position": neural_weights_by_position or {},
+            "training_seasons": list(training_seasons or []),
+            "max_training_season": max(training_seasons) if training_seasons else None,
         },
         output_path,
     )

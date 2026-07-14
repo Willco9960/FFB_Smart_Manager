@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from statistics import pstdev
 
 from fantasy_engine.fantasy_points import (
     STANDARD_SCORING,
@@ -30,6 +31,13 @@ WEEKLY_PROJECTION_FEATURE_NAMES = (
     "is_wr",
     "is_te",
     "is_k",
+    "recent_points_stddev",
+    "recent_target_share",
+    "recent_carry_share",
+    "team_recent_pass_attempts",
+    "team_recent_rushing_attempts",
+    "opponent_recent_defensive_points",
+    "season_week_progress",
 )
 ELIGIBLE_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
 
@@ -69,8 +77,7 @@ def get_row_yards(row: dict[str, str]) -> float:
 
 def get_row_touchdowns(row: dict[str, str]) -> float:
     return sum(
-        get_float(row, field_name)
-        for field_name in ("passing_tds", "rushing_tds", "receiving_tds")
+        get_float(row, field_name) for field_name in ("passing_tds", "rushing_tds", "receiving_tds")
     )
 
 
@@ -86,16 +93,20 @@ def get_row_receptions(row: dict[str, str]) -> float:
     return get_float(row, "receptions")
 
 
+def get_row_pass_attempts(row: dict[str, str]) -> float:
+    return get_float(row, "attempts")
+
+
+def get_row_rushing_attempts(row: dict[str, str]) -> float:
+    return get_float(row, "carries")
+
+
 def get_recent_rows(
     rows: list[dict[str, str]],
     player_key: tuple[str, str],
     week: int,
 ) -> list[dict[str, str]]:
-    prior_rows = [
-        row
-        for row in rows
-        if get_player_key(row) == player_key and get_week(row) < week
-    ]
+    prior_rows = [row for row in rows if get_player_key(row) == player_key and get_week(row) < week]
     return sorted(prior_rows, key=get_week)[-3:]
 
 
@@ -118,11 +129,7 @@ def get_recent_rows_from_index(
     player_key: tuple[str, str],
     week: int,
 ) -> list[dict[str, str]]:
-    prior_rows = [
-        row
-        for row in player_week_index.get(player_key, [])
-        if get_week(row) < week
-    ]
+    prior_rows = [row for row in player_week_index.get(player_key, []) if get_week(row) < week]
     return prior_rows[-3:]
 
 
@@ -142,10 +149,24 @@ def create_defensive_weekly_signals(
             continue
 
         key = (get_team(row), get_week(row))
-        signals.setdefault(key, {signal_name: 0.0 for signal_name in stat_names})
+        signals.setdefault(
+            key,
+            {
+                **{signal_name: 0.0 for signal_name in stat_names},
+                "fantasy_points": 0.0,
+            },
+        )
 
         for signal_name, source_name in stat_names.items():
             signals[key][signal_name] += get_float(row, source_name)
+
+        signals[key]["fantasy_points"] += (
+            get_float(row, "def_sacks")
+            + (get_float(row, "def_interceptions") * 2.0)
+            + (get_float(row, "fumble_recovery_opp") * 2.0)
+            + (get_float(row, "def_tds") * 6.0)
+            + (get_float(row, "def_safeties") * 2.0)
+        )
 
     return signals
 
@@ -168,6 +189,23 @@ def get_opponent_signal_averages(
         sum(signal[name] for signal in prior_signals) / len(prior_signals)
         for name in ("sacks", "interceptions", "fumble_recoveries", "touchdowns")
     )
+
+
+def get_opponent_defensive_points_average(
+    defensive_signals: dict[tuple[str, int], dict[str, float]],
+    opponent: str,
+    week: int,
+) -> float:
+    prior_signals = [
+        signal
+        for (team, signal_week), signal in defensive_signals.items()
+        if team == opponent and signal_week < week
+    ]
+
+    if not prior_signals:
+        return 0.0
+
+    return sum(signal["fantasy_points"] for signal in prior_signals) / len(prior_signals)
 
 
 def get_team_recent_points(
@@ -214,6 +252,84 @@ def build_team_week_points(
     return team_week_points
 
 
+def build_team_week_opportunities(
+    rows: list[dict[str, str]],
+) -> dict[str, dict[int, dict[str, float]]]:
+    opportunities: dict[str, dict[int, dict[str, float]]] = {}
+
+    for row in rows:
+        if row.get("position") not in ELIGIBLE_POSITIONS:
+            continue
+
+        team = get_team(row)
+        week = get_week(row)
+        team_weeks = opportunities.setdefault(team, {})
+        totals = team_weeks.setdefault(
+            week,
+            {
+                "targets": 0.0,
+                "carries": 0.0,
+                "pass_attempts": 0.0,
+                "rushing_attempts": 0.0,
+            },
+        )
+        totals["targets"] += get_row_targets(row)
+        totals["carries"] += get_row_carries(row)
+        totals["pass_attempts"] += get_row_pass_attempts(row)
+        totals["rushing_attempts"] += get_row_rushing_attempts(row)
+
+    return opportunities
+
+
+def get_recent_team_opportunities(
+    team_week_opportunities: dict[str, dict[int, dict[str, float]]],
+    team: str,
+    week: int,
+) -> dict[str, float]:
+    prior_weeks = [
+        (row_week, totals)
+        for row_week, totals in team_week_opportunities.get(team, {}).items()
+        if row_week < week
+    ]
+    recent_weeks = sorted(prior_weeks)[-3:]
+
+    if not recent_weeks:
+        return {
+            "pass_attempts": 0.0,
+            "rushing_attempts": 0.0,
+        }
+
+    return {
+        stat_name: sum(totals[stat_name] for _, totals in recent_weeks) / len(recent_weeks)
+        for stat_name in ("pass_attempts", "rushing_attempts")
+    }
+
+
+def get_recent_opportunity_shares(
+    recent_rows: list[dict[str, str]],
+    team_week_opportunities: dict[str, dict[int, dict[str, float]]],
+) -> tuple[float, float]:
+    target_shares = []
+    carry_shares = []
+
+    for row in recent_rows:
+        team = get_team(row)
+        week = get_week(row)
+        totals = team_week_opportunities.get(team, {}).get(week, {})
+        team_targets = totals.get("targets", 0.0)
+        team_carries = totals.get("carries", 0.0)
+
+        if team_targets > 0:
+            target_shares.append(get_row_targets(row) / team_targets)
+        if team_carries > 0:
+            carry_shares.append(get_row_carries(row) / team_carries)
+
+    return (
+        sum(target_shares) / len(target_shares) if target_shares else 0.0,
+        sum(carry_shares) / len(carry_shares) if carry_shares else 0.0,
+    )
+
+
 def get_team_recent_points_from_index(
     team_week_points: dict[str, dict[int, float]],
     team: str,
@@ -256,6 +372,7 @@ def create_weekly_projection_examples(
         defensive_signals = create_defensive_weekly_signals(rows)
         player_week_index = build_player_week_index(rows)
         team_week_points = build_team_week_points(rows, scoring_settings)
+        team_week_opportunities = build_team_week_opportunities(rows)
 
         for row in rows:
             position = row.get("position", "")
@@ -279,17 +396,31 @@ def create_weekly_projection_examples(
             week = get_week(row)
             recent_rows = get_recent_rows_from_index(player_week_index, player_key, week)
             recent_points = [
-                calculate_fantasy_points(recent_row, scoring_settings)
-                for recent_row in recent_rows
+                calculate_fantasy_points(recent_row, scoring_settings) for recent_row in recent_rows
             ]
             recent_average = sum(recent_points) / len(recent_points) if recent_points else 0.0
+            recent_points_stddev = pstdev(recent_points) if len(recent_points) > 1 else 0.0
+            target_share, carry_share = get_recent_opportunity_shares(
+                recent_rows,
+                team_week_opportunities,
+            )
             opponent_signals = get_opponent_signal_averages(
+                defensive_signals,
+                row.get("opponent_team", ""),
+                week,
+            )
+            opponent_defensive_points = get_opponent_defensive_points_average(
                 defensive_signals,
                 row.get("opponent_team", ""),
                 week,
             )
             target_team = get_team(row)
             prior_team = str(prior_player["team"])
+            team_opportunities = get_recent_team_opportunities(
+                team_week_opportunities,
+                target_team,
+                week,
+            )
 
             examples.append(
                 WeeklyProjectionExample(
@@ -315,6 +446,13 @@ def create_weekly_projection_examples(
                         float(position == "WR"),
                         float(position == "TE"),
                         float(position == "K"),
+                        recent_points_stddev,
+                        target_share,
+                        carry_share,
+                        team_opportunities["pass_attempts"],
+                        team_opportunities["rushing_attempts"],
+                        opponent_defensive_points,
+                        float(week) / 18.0,
                     ),
                     target_points=calculate_fantasy_points(row, scoring_settings),
                 )

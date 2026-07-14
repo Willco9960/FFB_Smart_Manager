@@ -74,9 +74,7 @@ class NeuralProjectionService:
         with torch.no_grad():
             normalized_prediction = self.model(feature_tensor).item()
 
-        prediction = (
-            normalized_prediction * self.target_standard_deviation
-        ) + self.target_mean
+        prediction = (normalized_prediction * self.target_standard_deviation) + self.target_mean
 
         return round(max(0.0, prediction), 2)
 
@@ -90,16 +88,25 @@ class NeuralProjectionService:
                 replace(team, roster=[self.project_player(player) for player in team.roster])
                 for team in league.teams
             ],
-            available_players=[
-                self.project_player(player) for player in league.available_players
-            ],
+            available_players=[self.project_player(player) for player in league.available_players],
         )
 
 
 def load_neural_projection_service(
     model_path: Path,
+    target_season: int | None = None,
 ) -> NeuralProjectionService | None:
     if not model_path.exists():
         return None
+
+    if target_season is not None:
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+        max_training_season = checkpoint.get("max_training_season")
+
+        if max_training_season is None:
+            return None
+
+        if target_season <= int(max_training_season):
+            return None
 
     return NeuralProjectionService.from_checkpoint(model_path)
