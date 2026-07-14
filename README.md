@@ -42,5 +42,5 @@ python -m scripts.train_weekly_projection_nn
 Then train the manager across the expanded historical window:
 
 ```powershell
-python -m scripts.train_manager_policy_real_seasons --population 50 --generations 40 --selection 10
+python -m scripts.train_manager_policy_real_seasons --start-season 2001 --end-season 2024 --holdout-season 2025 --population 30 --generations 12 --selection 10
 ```
