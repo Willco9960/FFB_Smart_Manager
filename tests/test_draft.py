@@ -95,3 +95,17 @@ def test_snake_draft_uses_the_agent_assigned_to_each_team():
 
     assert draft_results[0].player.name == "QB Player 1"
     assert draft_results[1].player.name == "DST Player 16"
+
+
+def test_snake_draft_can_randomize_draft_slots_with_seed():
+    first_league = create_test_league()
+    second_league = create_test_league()
+
+    first_results = run_snake_draft(first_league, rounds=1, draft_order_seed=7)
+    second_results = run_snake_draft(second_league, rounds=1, draft_order_seed=7)
+
+    first_order = [pick.team_name for pick in first_results]
+    second_order = [pick.team_name for pick in second_results]
+
+    assert first_order == second_order
+    assert first_order != [f"Team {number}" for number in range(1, 11)]

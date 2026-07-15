@@ -25,11 +25,11 @@ from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_season_simulation import run_historical_regular_season
 from models.weekly_projection_service import WeeklyNeuralProjectionService
 
-WEEKLY_WIN_REWARD = 10.0
-POINTS_FOR_WEIGHT = 0.1
-PLAYOFF_QUALIFICATION_REWARD = 25.0
-PLAYOFF_WIN_REWARD = 20.0
-CHAMPIONSHIP_REWARD = 100.0
+WEEKLY_WIN_REWARD = 15.0
+POINTS_FOR_WEIGHT = 0.05
+PLAYOFF_QUALIFICATION_REWARD = 40.0
+PLAYOFF_WIN_REWARD = 30.0
+CHAMPIONSHIP_REWARD = 150.0
 TRANSACTION_REWARD_WEIGHT = 0.25
 
 
@@ -101,7 +101,7 @@ def evaluate_full_season_battle_royale(
     evaluated_agents = []
     fallback_genome = transaction_genome_fallback or create_random_genome(seed=seed)
 
-    for agent_group in agent_groups:
+    for league_index, agent_group in enumerate(agent_groups):
         simulated_league = clone_league_for_agent(league)
         team_agents: dict[str, DraftAgent] = {}
 
@@ -112,6 +112,7 @@ def evaluate_full_season_battle_royale(
             league=simulated_league,
             rounds=rounds,
             team_agents=team_agents,
+            draft_order_seed=seed + league_index,
         )
         waiver_agents = {}
         trade_agents = {}
@@ -208,6 +209,8 @@ def evaluate_full_season_battle_royale(
                     playoff_wins=playoff_wins,
                     champion=champion,
                     transaction_reward=transaction_reward,
+                    playoff_rate=1.0 if qualifying_playoff_seed is not None else 0.0,
+                    championship_rate=1.0 if champion else 0.0,
                 )
             )
 

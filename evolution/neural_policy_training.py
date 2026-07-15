@@ -25,7 +25,8 @@ class NeuralGenerationResult:
     average_wins: float
     average_points_for: float
     playoff_rate: float
-    championship_count: int
+    championship_count: float
+    championship_rate: float
     best_agent: NeuralDraftAgent
     evaluated_agents: list[EvaluatedAgent]
 
@@ -58,7 +59,8 @@ class NeuralTrainingProgress:
     average_wins: float | None = None
     average_points_for: float | None = None
     playoff_rate: float | None = None
-    championship_count: int | None = None
+    championship_count: float | None = None
+    championship_rate: float | None = None
 
 
 ProgressCallback = Callable[[NeuralTrainingProgress], None]
@@ -74,12 +76,23 @@ def mutate_policy_network(
     network: ManagerPolicyNetwork,
     rng: random.Random,
     mutation_strength: float = 0.02,
+    torch_generator: torch.Generator | None = None,
 ) -> ManagerPolicyNetwork:
     mutated = clone_policy_network(network)
 
+    if torch_generator is None:
+        first_parameter = next(mutated.parameters())
+        torch_generator = torch.Generator(device=first_parameter.device)
+        torch_generator.manual_seed(rng.randrange(0, 2**63 - 1))
+
     with torch.no_grad():
         for parameter in mutated.parameters():
-            noise = torch.randn(parameter.shape) * mutation_strength
+            noise = torch.randn(
+                parameter.shape,
+                generator=torch_generator,
+                device=parameter.device,
+                dtype=parameter.dtype,
+            ) * mutation_strength
             parameter.add_(noise)
 
     return mutated
@@ -89,15 +102,25 @@ def crossover_policy_networks(
     first: ManagerPolicyNetwork,
     second: ManagerPolicyNetwork,
     rng: random.Random,
+    torch_generator: torch.Generator | None = None,
 ) -> ManagerPolicyNetwork:
     child = ManagerPolicyNetwork()
     first_state = first.state_dict()
     second_state = second.state_dict()
     child_state = {}
 
+    if torch_generator is None:
+        first_parameter = next(first.parameters())
+        torch_generator = torch.Generator(device=first_parameter.device)
+        torch_generator.manual_seed(rng.randrange(0, 2**63 - 1))
+
     for name, first_value in first_state.items():
         second_value = second_state[name]
-        mask = torch.rand(first_value.shape) < 0.5
+        mask = torch.rand(
+            first_value.shape,
+            generator=torch_generator,
+            device=first_value.device,
+        ) < 0.5
         child_state[name] = torch.where(mask, first_value, second_value)
 
     child.load_state_dict(child_state)
@@ -115,6 +138,9 @@ def create_next_neural_generation(
 
     rng = random.Random(seed)
     next_generation = list(selected_agents)
+    first_parameter = next(selected_agents[0].policy_network.parameters())
+    torch_generator = torch.Generator(device=first_parameter.device)
+    torch_generator.manual_seed(seed)
 
     while len(next_generation) < population_size:
         first_parent = rng.choice(selected_agents)
@@ -123,11 +149,13 @@ def create_next_neural_generation(
             first_parent.policy_network,
             second_parent.policy_network,
             rng,
+            torch_generator,
         )
         child_network = mutate_policy_network(
             child_network,
             rng,
             mutation_strength,
+            torch_generator,
         )
         next_generation.append(
             NeuralDraftAgent(
@@ -158,10 +186,34 @@ def aggregate_scenario_evaluations(
             raise ValueError("Every agent must have at least one scenario evaluation.")
 
         average_fitness = sum(result.fitness_score for result in agent_results) / len(agent_results)
+        average_wins = sum(
+            result.regular_season_wins for result in agent_results
+        ) / len(agent_results)
+        average_points_for = sum(result.points_for for result in agent_results) / len(agent_results)
+        average_playoff_wins = sum(
+            result.playoff_wins for result in agent_results
+        ) / len(agent_results)
+        average_transaction_reward = (
+            sum(result.transaction_reward for result in agent_results) / len(agent_results)
+        )
+        average_playoff_rate = sum(
+            result.playoff_rate for result in agent_results
+        ) / len(agent_results)
+        average_championship_rate = (
+            sum(result.championship_rate for result in agent_results) / len(agent_results)
+        )
         aggregated_results.append(
             replace(
                 agent_results[0],
                 fitness_score=round(average_fitness, 2),
+                regular_season_wins=round(average_wins, 2),
+                points_for=round(average_points_for, 2),
+                playoff_seed=None,
+                playoff_wins=round(average_playoff_wins, 2),
+                champion=average_championship_rate > 0.0,
+                transaction_reward=round(average_transaction_reward, 2),
+                playoff_rate=round(average_playoff_rate, 4),
+                championship_rate=round(average_championship_rate, 4),
             )
         )
 
@@ -341,9 +393,14 @@ def train_neural_policy_across_seasons(
             evaluated_agent.points_for for evaluated_agent in evaluated_agents
         ) / len(evaluated_agents)
         playoff_rate = sum(
-            evaluated_agent.playoff_seed is not None for evaluated_agent in evaluated_agents
+            evaluated_agent.playoff_rate for evaluated_agent in evaluated_agents
         ) / len(evaluated_agents)
-        championship_count = sum(evaluated_agent.champion for evaluated_agent in evaluated_agents)
+        championship_rate = sum(
+            evaluated_agent.championship_rate for evaluated_agent in evaluated_agents
+        ) / len(evaluated_agents)
+        championship_count = sum(
+            evaluated_agent.championship_rate for evaluated_agent in evaluated_agents
+        )
         generation_results.append(
             NeuralGenerationResult(
                 generation_number=generation_number,
@@ -353,6 +410,7 @@ def train_neural_policy_across_seasons(
                 average_points_for=average_points_for,
                 playoff_rate=playoff_rate,
                 championship_count=championship_count,
+                championship_rate=championship_rate,
                 best_agent=selected_agents[0],
                 evaluated_agents=evaluated_agents,
             )
@@ -373,6 +431,7 @@ def train_neural_policy_across_seasons(
                     average_points_for=generation_results[-1].average_points_for,
                     playoff_rate=generation_results[-1].playoff_rate,
                     championship_count=generation_results[-1].championship_count,
+                    championship_rate=generation_results[-1].championship_rate,
                 )
             )
         agents = create_next_neural_generation(

@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -39,15 +40,21 @@ def run_snake_draft(
     rounds: int = 16,
     draft_agent: DraftAgent | None = None,
     team_agents: dict[str, DraftAgent] | None = None,
+    draft_order_seed: int | None = None,
 ) -> list[DraftPick]:
     if draft_agent is not None and team_agents is not None:
         raise ValueError("Provide either draft_agent or team_agents, not both.")
 
     draft_results = []
+    draft_teams = list(league.teams)
+
+    if draft_order_seed is not None:
+        random.Random(draft_order_seed).shuffle(draft_teams)
+
     pick_number = 1
 
     for round_number in range(1, rounds + 1):
-        draft_order = get_snake_draft_order(league.teams, round_number)
+        draft_order = get_snake_draft_order(draft_teams, round_number)
 
         for team in draft_order:
             selected_agent = draft_agent

@@ -12,6 +12,21 @@ def test_mutate_policy_network_preserves_network_interface():
     assert mutated is not network
 
 
+def test_mutation_is_reproducible_for_same_seed():
+    network = ManagerPolicyNetwork()
+    first = mutate_policy_network(network, __import__("random").Random(7))
+    second = mutate_policy_network(network, __import__("random").Random(7))
+
+    assert all(
+        (first_parameter == second_parameter).all()
+        for first_parameter, second_parameter in zip(
+            first.parameters(),
+            second.parameters(),
+            strict=True,
+        )
+    )
+
+
 def test_create_next_neural_generation_keeps_selected_agents():
     genome = create_random_genome(seed=1)
     agent = NeuralDraftAgent(ManagerPolicyNetwork(), genome=genome)

@@ -44,10 +44,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-season", type=int, default=TRAINING_START_SEASON)
     parser.add_argument("--end-season", type=int, default=TRAINING_END_SEASON)
     parser.add_argument("--holdout-season", type=int, default=HOLDOUT_SEASON)
+    parser.add_argument(
+        "--initial-policy",
+        type=Path,
+        default=None,
+        help="Optional policy checkpoint to continue training from.",
+    )
     return parser.parse_args()
 
 
-def load_initial_policy():
+def load_initial_policy(requested_path: Path | None = None):
+    if requested_path is not None:
+        if not requested_path.exists():
+            raise FileNotFoundError(f"Initial policy checkpoint not found: {requested_path}")
+        return requested_path, load_manager_policy_network(requested_path)
+
     for path in INITIAL_POLICY_PATHS:
         if path.exists():
             return path, load_manager_policy_network(path)
@@ -121,7 +132,7 @@ def print_training_progress(progress: NeuralTrainingProgress) -> None:
             f"  avg wins {progress.average_wins:.2f} | "
             f"avg PF {progress.average_points_for:.2f} | "
             f"playoffs {progress.playoff_rate:.1%} | "
-            f"championships {progress.championship_count}",
+            f"championship rate {progress.championship_rate:.1%}",
             flush=True,
         )
         return
@@ -142,7 +153,7 @@ def main():
     if args.holdout_season <= max(training_seasons):
         raise ValueError("Holdout season must be after every training season.")
 
-    initial_policy_path, initial_network = load_initial_policy()
+    initial_policy_path, initial_network = load_initial_policy(args.initial_policy)
     scenarios = [create_season_scenario(season) for season in training_seasons]
     training_result = train_neural_policy_across_seasons(
         initial_network=initial_network,
@@ -173,7 +184,7 @@ def main():
             f"best fitness = {generation.best_fitness:.2f}, "
             f"average wins = {generation.average_wins:.2f}, "
             f"playoff rate = {generation.playoff_rate:.1%}, "
-            f"championships = {generation.championship_count}"
+            f"championship rate = {generation.championship_rate:.1%}"
         )
 
     print(f"Policy model saved to: {OUTPUT_PATH}")

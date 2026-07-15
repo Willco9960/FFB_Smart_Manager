@@ -34,6 +34,8 @@ class EvaluatedAgent:
     playoff_wins: int = 0
     champion: bool = False
     transaction_reward: float = 0.0
+    playoff_rate: float = 0.0
+    championship_rate: float = 0.0
 
 
 def create_agent_population(

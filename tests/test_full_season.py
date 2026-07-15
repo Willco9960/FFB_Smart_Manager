@@ -11,7 +11,7 @@ def test_full_season_fitness_rewards_wins_playoffs_championship_and_transactions
         transaction_reward=40.0,
     )
 
-    assert score == 375.0
+    assert score == 460.0
 
 
 def test_full_season_fitness_punishes_negative_transaction_value():
