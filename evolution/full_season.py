@@ -172,6 +172,11 @@ def evaluate_full_season_battle_royale(
             agent_genome = getattr(agent, "genome", None) or fallback_genome
             standing = regular_season.standings[team.name]
             playoff_seed = get_team_playoff_seed(team.name, ranked_standings)
+            qualifying_playoff_seed = (
+                playoff_seed
+                if playoff_seed is not None and playoff_seed <= rules.playoff_team_count
+                else None
+            )
             playoff_wins = count_playoff_wins(playoff_seed, playoff_result)
             champion = playoff_result.champion.name == team.name
             transaction_reward = round(transaction_rewards.get(team.name, 0.0), 2)
@@ -197,9 +202,9 @@ def evaluate_full_season_battle_royale(
                     winning_draft_picks=[
                         pick for pick in draft_picks if pick.team_name == team.name
                     ],
-                    regular_season_wins=standing.wins,
-                    points_for=round(standing.points_for, 2),
-                    playoff_seed=playoff_seed,
+                regular_season_wins=standing.wins,
+                points_for=round(standing.points_for, 2),
+                playoff_seed=qualifying_playoff_seed,
                     playoff_wins=playoff_wins,
                     champion=champion,
                     transaction_reward=transaction_reward,
