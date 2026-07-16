@@ -59,3 +59,5 @@ def test_aggregate_scenario_evaluations_averages_outcome_metrics():
     assert aggregated[0].points_for == 1000.0
     assert aggregated[0].playoff_rate == 0.5
     assert aggregated[0].championship_rate == 0.5
+    assert aggregated[0].fitness_stddev == 100.0
+    assert aggregated[0].risk_adjusted_fitness == 175.0

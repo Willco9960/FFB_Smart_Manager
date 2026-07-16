@@ -3,6 +3,7 @@ from pathlib import Path
 
 from evolution.genome import DraftStrategyGenome, create_random_genome
 from evolution.neural_policy_training import (
+    DEFAULT_CONSISTENCY_PENALTY,
     NeuralPolicySeasonScenario,
     NeuralTrainingProgress,
     train_neural_policy_across_seasons,
@@ -41,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generations", type=int, default=2)
     parser.add_argument("--selection", type=int, default=3)
     parser.add_argument("--mutation", type=float, default=0.02)
+    parser.add_argument("--consistency-penalty", type=float, default=DEFAULT_CONSISTENCY_PENALTY)
     parser.add_argument("--start-season", type=int, default=TRAINING_START_SEASON)
     parser.add_argument("--end-season", type=int, default=TRAINING_END_SEASON)
     parser.add_argument("--holdout-season", type=int, default=HOLDOUT_SEASON)
@@ -132,7 +134,16 @@ def print_training_progress(progress: NeuralTrainingProgress) -> None:
             f"  avg wins {progress.average_wins:.2f} | "
             f"avg PF {progress.average_points_for:.2f} | "
             f"playoffs {progress.playoff_rate:.1%} | "
-            f"championship rate {progress.championship_rate:.1%}",
+            f"championship rate {progress.championship_rate:.1%} | "
+            f"best risk-adjusted {progress.best_risk_adjusted_fitness:.2f}",
+            flush=True,
+        )
+        print(
+            f"  best agent: wins {progress.best_agent_average_wins:.2f} | "
+            f"PF {progress.best_agent_average_points_for:.2f} | "
+            f"playoffs {progress.best_agent_playoff_rate:.1%} | "
+            f"championships {progress.best_agent_championship_rate:.1%} | "
+            f"fitness stddev {progress.average_fitness_stddev:.2f}",
             flush=True,
         )
         return
@@ -162,7 +173,8 @@ def main():
         population_size=args.population,
         generation_count=args.generations,
         selection_count=args.selection,
-        mutation_strength=args.mutation,
+            mutation_strength=args.mutation,
+            consistency_penalty=args.consistency_penalty,
         seed=2021,
         rounds=16,
         lineup_rules=ESPN_DEFAULT_LINEUP_RULES,
@@ -182,9 +194,17 @@ def main():
             f"Generation {generation.generation_number}: "
             f"average fitness = {generation.average_fitness:.2f}, "
             f"best fitness = {generation.best_fitness:.2f}, "
+            f"best risk-adjusted = {generation.best_risk_adjusted_fitness:.2f}, "
             f"average wins = {generation.average_wins:.2f}, "
             f"playoff rate = {generation.playoff_rate:.1%}, "
             f"championship rate = {generation.championship_rate:.1%}"
+        )
+        print(
+            f"  best agent: wins {generation.best_agent_average_wins:.2f}, "
+            f"PF {generation.best_agent_average_points_for:.2f}, "
+            f"playoffs {generation.best_agent_playoff_rate:.1%}, "
+            f"championships {generation.best_agent_championship_rate:.1%} | "
+            f"population fitness stddev {generation.average_fitness_stddev:.2f}"
         )
 
     print(f"Policy model saved to: {OUTPUT_PATH}")

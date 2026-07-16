@@ -1,5 +1,6 @@
 import copy
 import random
+import statistics
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -27,6 +28,12 @@ class NeuralGenerationResult:
     playoff_rate: float
     championship_count: float
     championship_rate: float
+    average_fitness_stddev: float
+    best_risk_adjusted_fitness: float
+    best_agent_average_wins: float
+    best_agent_average_points_for: float
+    best_agent_playoff_rate: float
+    best_agent_championship_rate: float
     best_agent: NeuralDraftAgent
     evaluated_agents: list[EvaluatedAgent]
 
@@ -61,9 +68,16 @@ class NeuralTrainingProgress:
     playoff_rate: float | None = None
     championship_count: float | None = None
     championship_rate: float | None = None
+    average_fitness_stddev: float | None = None
+    best_risk_adjusted_fitness: float | None = None
+    best_agent_average_wins: float | None = None
+    best_agent_average_points_for: float | None = None
+    best_agent_playoff_rate: float | None = None
+    best_agent_championship_rate: float | None = None
 
 
 ProgressCallback = Callable[[NeuralTrainingProgress], None]
+DEFAULT_CONSISTENCY_PENALTY = 0.25
 
 
 def clone_policy_network(network: ManagerPolicyNetwork) -> ManagerPolicyNetwork:
@@ -170,6 +184,7 @@ def create_next_neural_generation(
 def aggregate_scenario_evaluations(
     agents: list[NeuralDraftAgent],
     scenario_results: list[list[EvaluatedAgent]],
+    consistency_penalty: float = DEFAULT_CONSISTENCY_PENALTY,
 ) -> list[EvaluatedAgent]:
     results_by_agent: dict[int, list[EvaluatedAgent]] = {id(agent): [] for agent in agents}
 
@@ -186,6 +201,10 @@ def aggregate_scenario_evaluations(
             raise ValueError("Every agent must have at least one scenario evaluation.")
 
         average_fitness = sum(result.fitness_score for result in agent_results) / len(agent_results)
+        fitness_stddev = statistics.pstdev(
+            result.fitness_score for result in agent_results
+        )
+        risk_adjusted_fitness = average_fitness - (consistency_penalty * fitness_stddev)
         average_wins = sum(
             result.regular_season_wins for result in agent_results
         ) / len(agent_results)
@@ -214,6 +233,8 @@ def aggregate_scenario_evaluations(
                 transaction_reward=round(average_transaction_reward, 2),
                 playoff_rate=round(average_playoff_rate, 4),
                 championship_rate=round(average_championship_rate, 4),
+                fitness_stddev=round(fitness_stddev, 2),
+                risk_adjusted_fitness=round(risk_adjusted_fitness, 2),
             )
         )
 
@@ -231,6 +252,7 @@ def evaluate_agents_across_season_scenarios(
     generation_count: int = 1,
     progress_callback: ProgressCallback | None = None,
     start_time: float | None = None,
+    consistency_penalty: float = DEFAULT_CONSISTENCY_PENALTY,
 ) -> list[EvaluatedAgent]:
     scenario_results = []
     scenario_index = 0
@@ -282,7 +304,11 @@ def evaluate_agents_across_season_scenarios(
                     )
                 )
 
-    return aggregate_scenario_evaluations(agents, scenario_results)
+    return aggregate_scenario_evaluations(
+        agents,
+        scenario_results,
+        consistency_penalty=consistency_penalty,
+    )
 
 
 def train_neural_policy_on_seasons(
@@ -300,6 +326,7 @@ def train_neural_policy_on_seasons(
     synthetic_performances: list[list[WeeklyPlayerPerformance]] | None = None,
     projection_service: WeeklyNeuralProjectionService | None = None,
     progress_callback: ProgressCallback | None = None,
+    consistency_penalty: float = DEFAULT_CONSISTENCY_PENALTY,
 ) -> NeuralPolicyTrainingResult:
     return train_neural_policy_across_seasons(
         initial_network=initial_network,
@@ -321,6 +348,7 @@ def train_neural_policy_on_seasons(
         rounds=rounds,
         lineup_rules=lineup_rules,
         progress_callback=progress_callback,
+        consistency_penalty=consistency_penalty,
     )
 
 
@@ -336,6 +364,7 @@ def train_neural_policy_across_seasons(
     rounds: int = 16,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     progress_callback: ProgressCallback | None = None,
+    consistency_penalty: float = DEFAULT_CONSISTENCY_PENALTY,
 ) -> NeuralPolicyTrainingResult:
     if not scenarios:
         raise ValueError("At least one season scenario is required.")
@@ -375,6 +404,7 @@ def train_neural_policy_across_seasons(
             generation_count=generation_count,
             progress_callback=progress_callback,
             start_time=started_at,
+            consistency_penalty=consistency_penalty,
         )
         ranked_agents = rank_evaluated_agents(evaluated_agents)
         ranked_neural_agents = []
@@ -401,6 +431,10 @@ def train_neural_policy_across_seasons(
         championship_count = sum(
             evaluated_agent.championship_rate for evaluated_agent in evaluated_agents
         )
+        best_evaluated_agent = ranked_agents[0]
+        average_fitness_stddev = sum(
+            evaluated_agent.fitness_stddev for evaluated_agent in evaluated_agents
+        ) / len(evaluated_agents)
         generation_results.append(
             NeuralGenerationResult(
                 generation_number=generation_number,
@@ -411,6 +445,13 @@ def train_neural_policy_across_seasons(
                 playoff_rate=playoff_rate,
                 championship_count=championship_count,
                 championship_rate=championship_rate,
+                average_fitness_stddev=average_fitness_stddev,
+                best_risk_adjusted_fitness=best_evaluated_agent.risk_adjusted_fitness
+                or best_evaluated_agent.fitness_score,
+                best_agent_average_wins=best_evaluated_agent.regular_season_wins,
+                best_agent_average_points_for=best_evaluated_agent.points_for,
+                best_agent_playoff_rate=best_evaluated_agent.playoff_rate,
+                best_agent_championship_rate=best_evaluated_agent.championship_rate,
                 best_agent=selected_agents[0],
                 evaluated_agents=evaluated_agents,
             )
@@ -432,6 +473,12 @@ def train_neural_policy_across_seasons(
                     playoff_rate=generation_results[-1].playoff_rate,
                     championship_count=generation_results[-1].championship_count,
                     championship_rate=generation_results[-1].championship_rate,
+                    average_fitness_stddev=generation_results[-1].average_fitness_stddev,
+                    best_risk_adjusted_fitness=generation_results[-1].best_risk_adjusted_fitness,
+                    best_agent_average_wins=generation_results[-1].best_agent_average_wins,
+                    best_agent_average_points_for=generation_results[-1].best_agent_average_points_for,
+                    best_agent_playoff_rate=generation_results[-1].best_agent_playoff_rate,
+                    best_agent_championship_rate=generation_results[-1].best_agent_championship_rate,
                 )
             )
         agents = create_next_neural_generation(

@@ -36,6 +36,8 @@ class EvaluatedAgent:
     transaction_reward: float = 0.0
     playoff_rate: float = 0.0
     championship_rate: float = 0.0
+    fitness_stddev: float = 0.0
+    risk_adjusted_fitness: float | None = None
 
 
 def create_agent_population(
@@ -215,7 +217,11 @@ def rank_evaluated_agents(
 ) -> list[EvaluatedAgent]:
     return sorted(
         evaluated_agents,
-        key=lambda evaluated_agent: evaluated_agent.fitness_score,
+        key=lambda evaluated_agent: (
+            evaluated_agent.risk_adjusted_fitness
+            if evaluated_agent.risk_adjusted_fitness is not None
+            else evaluated_agent.fitness_score
+        ),
         reverse=True,
     )
 
