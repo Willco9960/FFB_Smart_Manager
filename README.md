@@ -42,7 +42,13 @@ python -m scripts.train_weekly_projection_nn
 Then train the manager across the expanded historical window:
 
 ```powershell
-python -u -m scripts.train_manager_policy_real_seasons --start-season 2001 --end-season 2024 --holdout-season 2025 --population 30 --generations 12 --selection 10 2>&1 | Tee-Object -FilePath training_overnight.log
+python -u -m scripts.train_manager_policy_real_seasons --start-season 2001 --end-season 2024 --holdout-season 2025 --population 30 --generations 12 --selection 10 --consistency-penalty 0.25 2>&1 | Tee-Object -FilePath training_overnight.log
 ```
 
 `Tee-Object` keeps progress visible in the terminal while saving the same output to a log file.
+
+Evaluate the trained policy across multiple seasons:
+
+```powershell
+python -u -m scripts.evaluate_real_policy_walk_forward --start-season 2021 --end-season 2025 2>&1 | Tee-Object -FilePath policy_multi_season_evaluation.log
+```
