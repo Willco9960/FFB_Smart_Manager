@@ -46,6 +46,7 @@ python -u -m scripts.train_manager_policy_real_seasons --start-season 2001 --end
 ```
 
 `Tee-Object` keeps progress visible in the terminal while saving the same output to a log file.
+Completed generations are also checkpointed under `data/models/manager_training_checkpoints/`.
 
 Evaluate the trained policy across multiple seasons:
 

@@ -42,6 +42,7 @@ class NeuralGenerationResult:
 class NeuralPolicyTrainingResult:
     generations: list[NeuralGenerationResult]
     best_agent: NeuralDraftAgent
+    best_generation_number: int = 0
 
 
 @dataclass
@@ -77,6 +78,7 @@ class NeuralTrainingProgress:
 
 
 ProgressCallback = Callable[[NeuralTrainingProgress], None]
+GenerationCallback = Callable[[NeuralGenerationResult], None]
 DEFAULT_CONSISTENCY_PENALTY = 0.25
 
 
@@ -327,6 +329,7 @@ def train_neural_policy_on_seasons(
     projection_service: WeeklyNeuralProjectionService | None = None,
     progress_callback: ProgressCallback | None = None,
     consistency_penalty: float = DEFAULT_CONSISTENCY_PENALTY,
+    generation_callback: GenerationCallback | None = None,
 ) -> NeuralPolicyTrainingResult:
     return train_neural_policy_across_seasons(
         initial_network=initial_network,
@@ -349,6 +352,7 @@ def train_neural_policy_on_seasons(
         lineup_rules=lineup_rules,
         progress_callback=progress_callback,
         consistency_penalty=consistency_penalty,
+        generation_callback=generation_callback,
     )
 
 
@@ -365,6 +369,7 @@ def train_neural_policy_across_seasons(
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     progress_callback: ProgressCallback | None = None,
     consistency_penalty: float = DEFAULT_CONSISTENCY_PENALTY,
+    generation_callback: GenerationCallback | None = None,
 ) -> NeuralPolicyTrainingResult:
     if not scenarios:
         raise ValueError("At least one season scenario is required.")
@@ -481,6 +486,8 @@ def train_neural_policy_across_seasons(
                     best_agent_championship_rate=generation_results[-1].best_agent_championship_rate,
                 )
             )
+        if generation_callback is not None:
+            generation_callback(generation_results[-1])
         agents = create_next_neural_generation(
             selected_agents=selected_agents,
             population_size=population_size,
@@ -488,12 +495,13 @@ def train_neural_policy_across_seasons(
             mutation_strength=mutation_strength,
         )
 
-    best_agent = max(
+    best_generation = max(
         generation_results,
-        key=lambda result: result.best_fitness,
-    ).best_agent
+        key=lambda result: result.best_risk_adjusted_fitness,
+    )
 
     return NeuralPolicyTrainingResult(
         generations=generation_results,
-        best_agent=best_agent,
+        best_agent=best_generation.best_agent,
+        best_generation_number=best_generation.generation_number,
     )

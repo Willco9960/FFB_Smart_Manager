@@ -4,6 +4,7 @@ from pathlib import Path
 from evolution.genome import DraftStrategyGenome, create_random_genome
 from evolution.neural_policy_training import (
     DEFAULT_CONSISTENCY_PENALTY,
+    NeuralGenerationResult,
     NeuralPolicySeasonScenario,
     NeuralTrainingProgress,
     train_neural_policy_across_seasons,
@@ -27,6 +28,7 @@ INITIAL_POLICY_PATHS = (
     Path("data/models/manager_policy_network.pt"),
 )
 OUTPUT_PATH = Path("data/models/manager_policy_real_seasons.pt")
+CHECKPOINT_DIR = Path("data/models/manager_training_checkpoints")
 TRAINING_START_SEASON = EARLIEST_RELIABLE_SEASON
 TRAINING_END_SEASON = 2024
 TRAINING_SEASONS = get_training_seasons(TRAINING_START_SEASON, TRAINING_END_SEASON)
@@ -52,6 +54,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional policy checkpoint to continue training from.",
     )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=CHECKPOINT_DIR,
+        help="Directory for completed-generation policy checkpoints.",
+    )
     return parser.parse_args()
 
 
@@ -75,6 +83,18 @@ def load_transaction_genome() -> DraftStrategyGenome:
         return DraftStrategyGenome.from_json(path.read_text(encoding="utf-8"))
 
     return create_random_genome(seed=2021)
+
+
+def create_generation_checkpoint_callback(checkpoint_dir: Path):
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_generation_checkpoint(generation: NeuralGenerationResult) -> None:
+        generation_path = checkpoint_dir / f"generation_{generation.generation_number:03d}.pt"
+        latest_path = checkpoint_dir / "latest.pt"
+        save_manager_policy_network(generation.best_agent.policy_network, generation_path)
+        save_manager_policy_network(generation.best_agent.policy_network, latest_path)
+
+    return save_generation_checkpoint
 
 
 def create_season_scenario(season: int) -> NeuralPolicySeasonScenario:
@@ -173,12 +193,13 @@ def main():
         population_size=args.population,
         generation_count=args.generations,
         selection_count=args.selection,
-            mutation_strength=args.mutation,
-            consistency_penalty=args.consistency_penalty,
+        mutation_strength=args.mutation,
+        consistency_penalty=args.consistency_penalty,
         seed=2021,
         rounds=16,
         lineup_rules=ESPN_DEFAULT_LINEUP_RULES,
         progress_callback=print_training_progress,
+        generation_callback=create_generation_checkpoint_callback(args.checkpoint_dir),
     )
     save_manager_policy_network(training_result.best_agent.policy_network, OUTPUT_PATH)
 
@@ -188,6 +209,8 @@ def main():
     print(f"Holdout season: {args.holdout_season}")
     print(f"Population: {args.population}")
     print(f"Generations: {args.generations}")
+    print(f"Selected policy generation: {training_result.best_generation_number}")
+    print(f"Generation checkpoints: {args.checkpoint_dir}")
 
     for generation in training_result.generations:
         print(
