@@ -1,4 +1,5 @@
 from ui.app import VIEW_BY_KEY, VIEW_DEFINITIONS
+from ui.demo_content import LINEUP_PLAYER_ANALYTICS, TOP_FREE_AGENT_PROSPECTS, TOP_TRADE_PROSPECTS
 from ui.league_state import DEMO_LEAGUES, LeagueWorkspace
 
 
@@ -35,3 +36,12 @@ def test_workspace_can_focus_and_clear_a_league():
     workspace.clear_selection()
 
     assert workspace.active_league is None
+
+
+def test_lineup_demo_has_unique_starters_and_alternatives():
+    starter_names = [player.name for player in LINEUP_PLAYER_ANALYTICS]
+
+    assert len(starter_names) == len(set(starter_names))
+    assert LINEUP_PLAYER_ANALYTICS[0].position == "QB"
+    assert TOP_FREE_AGENT_PROSPECTS
+    assert TOP_TRADE_PROSPECTS

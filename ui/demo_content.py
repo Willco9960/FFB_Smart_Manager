@@ -60,6 +60,33 @@ class FeedItem:
     detail: str
 
 
+@dataclass(frozen=True)
+class PlayerAnalytics:
+    name: str
+    team: str
+    position: str
+    avatar_color: str
+    projected_points: float
+    scored_points: float
+    bench_delta: float
+    final_points: float
+    boom_probability: int
+    bust_probability: int
+    efficiency: float
+    season_line: str
+    outlook: str
+
+
+@dataclass(frozen=True)
+class PlayerAlternative:
+    name: str
+    team: str
+    position: str
+    projected_points: float
+    delta: float
+    note: str
+
+
 DRAFT_RECOMMENDATIONS = (
     DraftRecommendation(
         1, "CeeDee Lamb", "WR", 18.7, "+4.8 value", "Fills WR need before a tier drop."
@@ -124,6 +151,130 @@ LINEUP_DECISIONS = (
         "START",
         "Designed touches create a strong ceiling.",
     ),
+)
+
+LINEUP_PLAYER_ANALYTICS = (
+    PlayerAnalytics(
+        "Jalen Hurts",
+        "PHI",
+        "QB",
+        "#38bdf8",
+        23.1,
+        21.8,
+        8.2,
+        322.4,
+        38,
+        12,
+        0.91,
+        "3,142 pass yds · 22 pass TD · 418 rush yds",
+        "Elite rushing floor; Dallas matchup raises ceiling.",
+    ),
+    PlayerAnalytics(
+        "Bijan Robinson",
+        "ATL",
+        "RB",
+        "#a78bfa",
+        19.4,
+        17.2,
+        6.4,
+        264.8,
+        34,
+        16,
+        0.87,
+        "812 rush yds · 38 rec · 4 total TD",
+        "Workload is secure and goal-line usage is trending up.",
+    ),
+    PlayerAnalytics(
+        "James Cook",
+        "BUF",
+        "RB",
+        "#60a5fa",
+        15.0,
+        14.3,
+        2.1,
+        218.6,
+        27,
+        19,
+        0.82,
+        "704 rush yds · 31 rec · 7 total TD",
+        "Receiving role protects the floor in negative scripts.",
+    ),
+    PlayerAnalytics(
+        "A.J. Brown",
+        "PHI",
+        "WR",
+        "#fbbf24",
+        18.2,
+        16.5,
+        5.8,
+        285.3,
+        36,
+        15,
+        0.94,
+        "74 rec · 1,126 yds · 8 TD",
+        "Target share and red-zone usage remain top tier.",
+    ),
+    PlayerAnalytics(
+        "Mike Evans",
+        "TB",
+        "WR",
+        "#fb7185",
+        11.9,
+        10.6,
+        -1.9,
+        242.1,
+        22,
+        24,
+        0.76,
+        "58 rec · 812 yds · 6 TD",
+        "Coverage matchup lowers confidence this week.",
+    ),
+    PlayerAnalytics(
+        "Sam LaPorta",
+        "DET",
+        "TE",
+        "#34d399",
+        13.7,
+        12.4,
+        3.9,
+        196.2,
+        29,
+        18,
+        0.89,
+        "51 rec · 604 yds · 5 TD",
+        "Route volume stays strong in a projected shootout.",
+    ),
+    PlayerAnalytics(
+        "Deebo Samuel",
+        "SF",
+        "FLEX",
+        "#fb923c",
+        15.8,
+        14.9,
+        4.6,
+        231.7,
+        33,
+        17,
+        0.88,
+        "47 rec · 622 yds · 7 total TD",
+        "Designed touches create a high weekly ceiling.",
+    ),
+)
+
+TOP_FREE_AGENT_PROSPECTS = (
+    PlayerAlternative("Jayden Reed", "GB", "WR", 15.8, 3.4, "Route participation rising"),
+    PlayerAlternative(
+        "Tyjae Spears", "TEN", "RB", 12.4, 1.8, "Standalone role plus handcuff upside"
+    ),
+    PlayerAlternative("Pat Freiermuth", "PIT", "TE", 10.7, 0.9, "Red-zone usage improving"),
+)
+
+TOP_TRADE_PROSPECTS = (
+    PlayerAlternative(
+        "Amon-Ra St. Brown", "DET", "WR", 19.2, 4.6, "Trade target · consistent target floor"
+    ),
+    PlayerAlternative("Mark Andrews", "BAL", "TE", 15.3, 3.1, "Trade target · buy-low window"),
+    PlayerAlternative("De'Von Achane", "MIA", "RB", 16.8, 2.8, "Trade target · explosive upside"),
 )
 
 WAIVER_TARGETS = (

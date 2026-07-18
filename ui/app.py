@@ -14,11 +14,14 @@ from ui.demo_content import (
     DRAFT_RECOMMENDATIONS,
     LEAGUE_TRENDS,
     LINEUP_DECISIONS,
+    LINEUP_PLAYER_ANALYTICS,
     MODEL_STATUSES,
     NEWS_UPDATES,
     PROJECTED_LEAGUE_POINTS,
     SEASON_WEEKS,
     SOCIAL_UPDATES,
+    TOP_FREE_AGENT_PROSPECTS,
+    TOP_TRADE_PROSPECTS,
     TRADE_IDEAS,
     WAIVER_TARGETS,
 )
@@ -1022,41 +1025,252 @@ class FantasyManagerApp(tk.Tk):
                 ("MATCHUP", "Favorable", "Projected win probability 62%"),
             ],
         )
-        cockpit_row = tk.Frame(body, bg=COLORS["background"])
-        cockpit_row.pack(fill="x", pady=(0, 16))
-        cockpit_row.grid_columnconfigure(0, weight=3)
-        cockpit_row.grid_columnconfigure(1, weight=2)
-        self._create_lineup_overlay(cockpit_row)
-        signal_column = tk.Frame(cockpit_row, bg=COLORS["background"])
-        signal_column.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        self._create_feed_panel(signal_column, "News & Injury Radar", NEWS_UPDATES)
-        self._create_feed_panel(signal_column, "Social Pulse", SOCIAL_UPDATES)
+        self._create_field_lineup(body)
+        self._create_player_detail_panel(body)
+
+    def _create_field_lineup(self, parent: tk.Frame) -> None:
+        panel = tk.Frame(
+            parent,
+            bg="#155e45",
+            highlightbackground="#2dd4a0",
+            highlightthickness=1,
+        )
+        panel.pack(fill="x", pady=(0, 16))
         tk.Label(
-            body,
-            text="Start / sit board",
+            panel,
+            text="STARTING LINEUP · SELECT A PLAYER FOR FULL ANALYTICS",
+            bg="#155e45",
+            fg="#d1fae5",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=16, pady=(10, 4))
+        field = tk.Frame(panel, bg="#166534")
+        field.pack(fill="x", padx=12, pady=(0, 12))
+        for column in range(5):
+            field.grid_columnconfigure(column, weight=1)
+
+        slot_positions = {
+            "QB": (0, 2),
+            "RB1": (1, 1),
+            "RB2": (1, 3),
+            "WR1": (2, 0),
+            "WR2": (2, 4),
+            "TE": (2, 2),
+            "FLEX": (3, 2),
+        }
+        for analytics in LINEUP_PLAYER_ANALYTICS:
+            slot = analytics.position
+            if analytics.position == "RB" and analytics.name.startswith("Bijan"):
+                slot = "RB1"
+            if analytics.position == "RB" and analytics.name.startswith("James"):
+                slot = "RB2"
+            if analytics.position == "WR" and analytics.name.startswith("A.J."):
+                slot = "WR1"
+            if analytics.position == "WR" and analytics.name.startswith("Mike"):
+                slot = "WR2"
+            row, column = slot_positions[slot]
+            self._create_player_card(field, analytics, row, column)
+
+        tk.Label(
+            field,
+            text="FIELD VIEW  ·  starters only  ·  bench and alternatives appear below",
+            bg="#166534",
+            fg="#bbf7d0",
+            font=("Segoe UI", 8),
+        ).grid(row=4, column=0, columnspan=5, pady=(6, 8))
+
+    def _create_player_card(self, parent: tk.Frame, player, row: int, column: int) -> None:
+        card = tk.Frame(parent, bg="#14532d", cursor="hand2")
+        card.grid(row=row, column=column, padx=6, pady=7, sticky="nsew")
+        avatar = tk.Canvas(card, width=58, height=58, bg="#14532d", highlightthickness=0)
+        avatar.pack(pady=(7, 2))
+        avatar.create_oval(7, 4, 51, 48, fill=player.avatar_color, outline="")
+        avatar.create_text(
+            29,
+            26,
+            text="".join(part[0] for part in player.name.split()[:2]),
+            fill="#082f35",
+            font=("Segoe UI", 13, "bold"),
+        )
+        tk.Label(
+            card,
+            text=player.name,
+            bg="#14532d",
+            fg="#f0fdf4",
+            font=("Segoe UI", 8, "bold"),
+            wraplength=112,
+        ).pack()
+        tk.Label(
+            card,
+            text=f"{player.team} · {player.position}",
+            bg="#14532d",
+            fg="#bbf7d0",
+            font=("Segoe UI", 8),
+        ).pack(pady=(1, 7))
+
+        widgets = (card, avatar)
+        for widget in widgets:
+            widget.bind("<Enter>", lambda _event, item=player: self._show_player_tooltip(item))
+            widget.bind("<Leave>", lambda _event: self._hide_player_tooltip())
+            widget.bind("<Button-1>", lambda _event, item=player: self._select_player(item))
+
+    def _show_player_tooltip(self, player) -> None:
+        self._hide_player_tooltip()
+        tooltip = tk.Toplevel(self)
+        self.player_tooltip = tooltip
+        tooltip.overrideredirect(True)
+        tooltip.configure(bg=COLORS["surface_alt"])
+        x = self.winfo_pointerx() + 14
+        y = self.winfo_pointery() + 14
+        tooltip.geometry(f"+{x}+{y}")
+        tk.Label(
+            tooltip,
+            text=(
+                f"{player.name} · {player.team}\n"
+                f"Projected: {player.projected_points:.1f}  |  Scored: {player.scored_points:.1f}\n"
+                f"Vs bench: {player.bench_delta:+.1f} points"
+            ),
+            bg=COLORS["surface_alt"],
+            fg=COLORS["text"],
+            justify="left",
+            font=("Segoe UI", 9),
+            padx=10,
+            pady=8,
+        ).pack()
+
+    def _hide_player_tooltip(self) -> None:
+        tooltip = getattr(self, "player_tooltip", None)
+        if tooltip is not None and tooltip.winfo_exists():
+            tooltip.destroy()
+        self.player_tooltip = None
+
+    def _select_player(self, player) -> None:
+        self._hide_player_tooltip()
+        self._render_player_detail(player)
+        self._set_activity(f"Player analytics loaded · {player.name}")
+
+    def _create_player_detail_panel(self, parent: tk.Frame) -> None:
+        self.player_detail_container = tk.Frame(parent, bg=COLORS["background"])
+        self.player_detail_container.pack(fill="x")
+        self._render_player_detail(LINEUP_PLAYER_ANALYTICS[0])
+
+    def _render_player_detail(self, player) -> None:
+        container = getattr(self, "player_detail_container", None)
+        if container is None:
+            return
+        for child in container.winfo_children():
+            child.destroy()
+        tk.Label(
+            container,
+            text=f"PLAYER INTELLIGENCE · {player.name.upper()}",
             bg=COLORS["background"],
             fg=COLORS["text"],
-            font=("Segoe UI", 14, "bold"),
-        ).pack(anchor="w", pady=(0, 10))
-        rows = [
-            (
-                item.slot,
-                item.player,
-                item.opponent,
-                f"{item.espn_projection:.1f}",
-                f"{item.ai_projection:.1f}",
-                item.decision,
-                item.reason,
-            )
-            for item in LINEUP_DECISIONS
-        ]
-        self._create_table(
-            body,
-            ("Slot", "Player", "Opp", "ESPN", "AI", "Decision", "Reason"),
-            rows,
-            (55, 130, 75, 65, 65, 95, 330),
-            action_label="Queue lineup change",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+        detail_row = tk.Frame(container, bg=COLORS["background"])
+        detail_row.pack(fill="x")
+        detail_row.grid_columnconfigure(0, weight=3)
+        detail_row.grid_columnconfigure(1, weight=2)
+        analytics_panel = tk.Frame(detail_row, bg=COLORS["surface"])
+        analytics_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        tk.Label(
+            analytics_panel,
+            text=f"{player.team} · {player.position}",
+            bg=COLORS["surface"],
+            fg=COLORS["accent"],
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=14, pady=(12, 4))
+        metrics = (
+            ("Projection", f"{player.projected_points:.1f}"),
+            ("Scored so far", f"{player.scored_points:.1f}"),
+            ("Season total", f"{player.final_points:.1f}"),
+            ("Vs bench", f"{player.bench_delta:+.1f}"),
+            ("Efficiency", f"{player.efficiency:.0%}"),
+            ("Boom / bust", f"{player.boom_probability}% / {player.bust_probability}%"),
         )
+        for label, value in metrics:
+            row = tk.Frame(analytics_panel, bg=COLORS["surface"])
+            row.pack(fill="x", padx=14, pady=2)
+            tk.Label(
+                row,
+                text=label,
+                bg=COLORS["surface"],
+                fg=COLORS["muted"],
+                font=("Segoe UI", 8),
+                width=18,
+                anchor="w",
+            ).pack(side="left")
+            tk.Label(
+                row,
+                text=value,
+                bg=COLORS["surface"],
+                fg=COLORS["text"],
+                font=("Segoe UI", 9, "bold"),
+                anchor="w",
+            ).pack(side="left")
+        tk.Label(
+            analytics_panel,
+            text=player.season_line,
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(8, 2))
+        tk.Label(
+            analytics_panel,
+            text=player.outlook,
+            bg=COLORS["surface"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 9),
+            wraplength=430,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(2, 12))
+
+        alternatives = tk.Frame(detail_row, bg=COLORS["background"])
+        alternatives.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self._create_alternative_panel(alternatives, "Top free agents", TOP_FREE_AGENT_PROSPECTS)
+        self._create_alternative_panel(alternatives, "Top trade prospects", TOP_TRADE_PROSPECTS)
+
+        feeds = tk.Frame(container, bg=COLORS["background"])
+        feeds.pack(fill="x", pady=(10, 0))
+        feeds.grid_columnconfigure((0, 1), weight=1, uniform="feeds")
+        news_panel = tk.Frame(feeds, bg=COLORS["surface"])
+        news_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        social_panel = tk.Frame(feeds, bg=COLORS["surface"])
+        social_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self._create_feed_panel(news_panel, "News & injury signals", NEWS_UPDATES[:2])
+        self._create_feed_panel(social_panel, "Social pulse", SOCIAL_UPDATES[:2])
+
+    def _create_alternative_panel(self, parent: tk.Frame, title: str, players: tuple) -> None:
+        panel = tk.Frame(
+            parent, bg=COLORS["surface"], highlightbackground=COLORS["border"], highlightthickness=1
+        )
+        panel.pack(fill="x", pady=(0, 8))
+        tk.Label(
+            panel, text=title, bg=COLORS["surface"], fg=COLORS["text"], font=("Segoe UI", 9, "bold")
+        ).pack(anchor="w", padx=12, pady=(10, 5))
+        for player in players:
+            tk.Label(
+                panel,
+                text=(
+                    f"{player.name} ({player.team}) · "
+                    f"{player.projected_points:.1f} · {player.delta:+.1f}"
+                ),
+                bg=COLORS["surface"],
+                fg=COLORS["accent"],
+                font=("Segoe UI", 8, "bold"),
+                anchor="w",
+            ).pack(fill="x", padx=12)
+            tk.Label(
+                panel,
+                text=player.note,
+                bg=COLORS["surface"],
+                fg=COLORS["muted"],
+                font=("Segoe UI", 8),
+                anchor="w",
+                wraplength=260,
+                justify="left",
+            ).pack(fill="x", padx=12, pady=(0, 6))
 
     def _render_waivers(self, view: ViewDefinition) -> None:
         self._render_header(view)
