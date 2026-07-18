@@ -7,6 +7,7 @@ the simulator, or any trained policy checkpoints.
 
 import tkinter as tk
 from dataclasses import dataclass
+from datetime import datetime
 from tkinter import ttk
 
 from ui.demo_content import (
@@ -93,6 +94,8 @@ class FantasyManagerApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.league_workspace = LeagueWorkspace()
+        self.activity_var = tk.StringVar(value="Systems nominal · awaiting operator input")
+        self.clock_var = tk.StringVar()
         self.title("Fantasy Football AI Manager")
         self.geometry("1180x760")
         self.minsize(980, 640)
@@ -217,8 +220,72 @@ class FantasyManagerApp(tk.Tk):
         )
         self.scope_status_label.pack(anchor="w", pady=(4, 0))
 
-        self.content = ttk.Frame(shell, style="Content.TFrame")
-        self.content.pack(side="left", fill="both", expand=True)
+        workspace = ttk.Frame(shell, style="Content.TFrame")
+        workspace.pack(side="left", fill="both", expand=True)
+        self._build_cockpit_bar(workspace)
+        self.content = ttk.Frame(workspace, style="Content.TFrame")
+        self.content.pack(fill="both", expand=True)
+        self._update_clock()
+
+    def _build_cockpit_bar(self, parent: ttk.Frame) -> None:
+        bar = tk.Frame(parent, bg=COLORS["surface_alt"], height=54)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+        tk.Label(
+            bar,
+            text="● LIVE DEMO",
+            bg=COLORS["surface_alt"],
+            fg=COLORS["accent"],
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(22, 12))
+        tk.Label(
+            bar,
+            textvariable=self.clock_var,
+            bg=COLORS["surface_alt"],
+            fg=COLORS["muted"],
+            font=("Consolas", 9),
+        ).pack(side="left")
+        tk.Label(
+            bar,
+            textvariable=self.activity_var,
+            bg=COLORS["surface_alt"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 9),
+        ).pack(side="left", padx=28)
+        ttk.Button(
+            bar,
+            text="Run Weekly Scan",
+            style="Accent.TButton",
+            command=self._run_weekly_scan,
+        ).pack(side="right", padx=(8, 18))
+        ttk.Button(
+            bar,
+            text="Sync All Demo Leagues",
+            style="Accent.TButton",
+            command=self._sync_demo_leagues,
+        ).pack(side="right", padx=8)
+
+    def _update_clock(self) -> None:
+        self.clock_var.set(datetime.now().strftime("%a %b %d  ·  %I:%M:%S %p"))
+        self.after(1000, self._update_clock)
+
+    def _set_activity(self, text: str) -> None:
+        self.activity_var.set(text)
+
+    def _sync_demo_leagues(self) -> None:
+        self._set_activity("Syncing 4 demo league feeds...")
+        self.after(
+            650, lambda: self._set_activity("Sync complete · 4 leagues healthy · no live APIs used")
+        )
+
+    def _run_weekly_scan(self) -> None:
+        self._set_activity("Scanning matchup, injury, waiver, and trade signals...")
+        self.after(
+            850, lambda: self._set_activity("Weekly scan complete · 6 recommendations queued")
+        )
+
+    def _acknowledge_action(self, action: str) -> None:
+        self._set_activity(f"Demo action queued · {action}")
 
     def show_view(self, key: str) -> None:
         """Display a view and update the active navigation button."""
@@ -234,6 +301,7 @@ class FantasyManagerApp(tk.Tk):
             child.destroy()
 
         view = VIEW_BY_KEY[key]
+        self._set_activity(f"Console routed to {view.title}")
         if key == "home":
             self._render_home(view)
         elif key == "draft":
@@ -509,6 +577,7 @@ class FantasyManagerApp(tk.Tk):
         columns: tuple[str, ...],
         rows: list[tuple[str, ...]],
         widths: tuple[int, ...],
+        action_label: str = "Queue Demo Action",
     ) -> ttk.Treeview:
         table = ttk.Treeview(
             parent,
@@ -523,6 +592,42 @@ class FantasyManagerApp(tk.Tk):
         for row in rows:
             table.insert("", "end", values=row)
         table.pack(fill="x", padx=1, pady=1)
+
+        detail_var = tk.StringVar(value="Select a row to inspect its recommendation details.")
+        detail_panel = tk.Frame(parent, bg=COLORS["surface_alt"])
+        detail_panel.pack(fill="x", pady=(8, 0))
+        tk.Label(
+            detail_panel,
+            textvariable=detail_var,
+            bg=COLORS["surface_alt"],
+            fg=COLORS["muted"],
+            anchor="w",
+            font=("Segoe UI", 9),
+        ).pack(side="left", fill="x", expand=True, padx=14, pady=10)
+
+        def queue_selected_action() -> None:
+            selected = table.selection()
+            if not selected:
+                self._acknowledge_action("select a row first")
+                return
+            values = table.item(selected[0], "values")
+            self._acknowledge_action(str(values[1] if len(values) > 1 else values[0]))
+
+        ttk.Button(
+            detail_panel,
+            text=action_label,
+            style="Accent.TButton",
+            command=queue_selected_action,
+        ).pack(side="right", padx=10, pady=6)
+
+        def update_details(_event: tk.Event) -> None:
+            selected = table.selection()
+            if selected:
+                values = table.item(selected[0], "values")
+                subject = values[1] if len(values) > 1 else values[0]
+                detail_var.set(f"Selected: {subject}  ·  {values[-1]}")
+
+        table.bind("<<TreeviewSelect>>", update_details)
         return table
 
     def _render_draft(self, view: ViewDefinition) -> None:
@@ -561,6 +666,7 @@ class FantasyManagerApp(tk.Tk):
             ("Rank", "Player", "Pos", "Projection", "Value", "Why"),
             rows,
             (55, 150, 55, 95, 105, 360),
+            action_label="Queue draft pick",
         )
 
     def _render_lineup(self, view: ViewDefinition) -> None:
@@ -602,6 +708,7 @@ class FantasyManagerApp(tk.Tk):
             ("Slot", "Player", "Opp", "ESPN", "AI", "Decision", "Reason"),
             rows,
             (55, 130, 75, 65, 65, 95, 330),
+            action_label="Queue lineup change",
         )
 
     def _render_waivers(self, view: ViewDefinition) -> None:
@@ -642,6 +749,7 @@ class FantasyManagerApp(tk.Tk):
             ("Action", "Player", "Pos", "3-Wk Proj.", "Confidence", "Reason"),
             rows,
             (120, 140, 55, 90, 95, 360),
+            action_label="Queue waiver move",
         )
 
     def _render_trades(self, view: ViewDefinition) -> None:
@@ -683,6 +791,7 @@ class FantasyManagerApp(tk.Tk):
             ("Type", "Send", "Receive", "Target Team", "Your Delta", "Fairness"),
             rows,
             (90, 150, 170, 170, 90, 90),
+            action_label="Queue trade review",
         )
 
     def _render_models(self, view: ViewDefinition) -> None:
@@ -713,6 +822,7 @@ class FantasyManagerApp(tk.Tk):
             ("Model / Service", "Status", "Last Run", "Details"),
             rows,
             (200, 120, 140, 380),
+            action_label="Inspect model",
         )
 
     def _render_settings(self, view: ViewDefinition) -> None:
@@ -771,7 +881,13 @@ class FantasyManagerApp(tk.Tk):
             ("Assistant mode", "Recommend + explain", "Human approval required"),
             ("Risk preference", "Balanced", "Adjustable per league"),
         ]
-        self._create_table(body, ("Setting", "Current", "Notes"), rows, (180, 350, 330))
+        self._create_table(
+            body,
+            ("Setting", "Current", "Notes"),
+            rows,
+            (180, 350, 330),
+            action_label="Edit demo setting",
+        )
 
     def _render_placeholder(self, view: ViewDefinition) -> None:
         self._render_header(view)
