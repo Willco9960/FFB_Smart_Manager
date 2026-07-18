@@ -10,6 +10,7 @@ import random
 
 import torch
 
+from agents.baseline_agents import create_baseline_opponents
 from agents.neural_draft_agent import NeuralDraftAgent
 from evolution.full_season import evaluate_full_season_battle_royale
 from evolution.genome import DraftStrategyGenome
@@ -72,6 +73,7 @@ def train_modular_policy_self_play(
     seed: int = 1,
     rounds: int = 16,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
+    include_baseline_opponents: bool = True,
 ) -> tuple[ModularManagerPolicyNetwork, list[float]]:
     if population_size < selection_count or selection_count < 1:
         raise ValueError("selection_count must be between one and population_size.")
@@ -87,10 +89,20 @@ def train_modular_policy_self_play(
     best_policy = clone_modular_policy(initial_policy)
     best_score = float("-inf")
     for generation in range(generations):
-        agents = [
+        neural_agents = [
             NeuralDraftAgent(policy_network=policy, genome=transaction_genome)
             for policy in population
         ]
+        agents = list(neural_agents)
+        if include_baseline_opponents:
+            minimum_total = len(neural_agents) + 10
+            total_agent_count = ((minimum_total + 9) // 10) * 10
+            agents.extend(
+                create_baseline_opponents(
+                    opponent_count=total_agent_count - len(neural_agents),
+                    seed=seed + generation,
+                )
+            )
         results: list[EvaluatedAgent] = []
         for scenario_index, (league, performances) in enumerate(scenarios):
             results.extend(
@@ -105,11 +117,14 @@ def train_modular_policy_self_play(
                 )
             )
 
-        results_by_agent: dict[int, list[EvaluatedAgent]] = {id(agent): [] for agent in agents}
+        results_by_agent: dict[int, list[EvaluatedAgent]] = {
+            id(agent): [] for agent in neural_agents
+        }
         for result in results:
-            results_by_agent[id(result.agent)].append(result)
+            if id(result.agent) in results_by_agent:
+                results_by_agent[id(result.agent)].append(result)
         averaged = []
-        for agent in agents:
+        for agent in neural_agents:
             agent_results = results_by_agent[id(agent)]
             average = sum(result.fitness_score for result in agent_results) / len(agent_results)
             averaged.append((average, agent))
