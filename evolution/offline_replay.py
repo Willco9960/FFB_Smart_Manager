@@ -72,6 +72,9 @@ def train_offline_policy(
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     loss_function = nn.HuberLoss(reduction="none")
+    grouped_records: dict[str, list[DecisionReplayRecord]] = {}
+    for record in replay_buffer.records:
+        grouped_records.setdefault(record.decision_type, []).append(record)
     final_loss = 0.0
 
     for _ in range(epochs):
@@ -79,21 +82,28 @@ def train_offline_policy(
         optimizer.zero_grad()
         total_loss = torch.tensor(0.0)
         total_weight = 0.0
-        for record in replay_buffer.records:
-            low, high = reward_ranges[record.decision_type]
+        for decision_type, decision_records in grouped_records.items():
+            low, high = reward_ranges[decision_type]
             denominator = max(high - low, 1.0)
-            target_value = (record.reward - low) / denominator
-            player = torch.tensor([record.features.player_values], dtype=torch.float32)
-            state = torch.tensor([record.features.state_values], dtype=torch.float32)
-            prediction = model(
-                player,
-                state,
-                decision_type=record.decision_type,
+            players = torch.tensor(
+                [record.features.player_values for record in decision_records],
+                dtype=torch.float32,
             )
-            target = torch.tensor([target_value], dtype=torch.float32)
-            weight = 1.0 + min(abs(record.reward) / 100.0, 2.0)
-            total_loss = total_loss + (loss_function(prediction, target) * weight).sum()
-            total_weight += weight
+            states = torch.tensor(
+                [record.features.state_values for record in decision_records],
+                dtype=torch.float32,
+            )
+            targets = torch.tensor(
+                [(record.reward - low) / denominator for record in decision_records],
+                dtype=torch.float32,
+            )
+            weights = torch.tensor(
+                [1.0 + min(abs(record.reward) / 100.0, 2.0) for record in decision_records],
+                dtype=torch.float32,
+            )
+            predictions = model(players, states, decision_type=decision_type)
+            total_loss = total_loss + (loss_function(predictions, targets) * weights).sum()
+            total_weight += float(weights.sum().item())
         total_loss = total_loss / max(total_weight, 1.0)
         total_loss.backward()
         optimizer.step()

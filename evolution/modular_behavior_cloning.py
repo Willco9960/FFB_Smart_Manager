@@ -29,23 +29,36 @@ def train_modular_behavior_policy(
     if not examples:
         raise ValueError("At least one imitation example is required.")
 
-    losses = []
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     loss_function = nn.HuberLoss()
+    grouped_examples: dict[str, list[ModularImitationExample]] = {}
+    for example in examples:
+        grouped_examples.setdefault(example.decision_type, []).append(example)
+    final_loss = 0.0
 
     for _ in range(epochs):
         model.train()
         optimizer.zero_grad()
         total_loss = torch.tensor(0.0)
-        for example in examples:
-            player = torch.tensor([example.features.player_values], dtype=torch.float32)
-            state = torch.tensor([example.features.state_values], dtype=torch.float32)
-            prediction = model(player, state, decision_type=example.decision_type)
-            target = torch.tensor([example.target_score], dtype=torch.float32)
-            total_loss = total_loss + loss_function(prediction, target)
-        total_loss = total_loss / len(examples)
+        for decision_type, decision_examples in grouped_examples.items():
+            players = torch.tensor(
+                [example.features.player_values for example in decision_examples],
+                dtype=torch.float32,
+            )
+            states = torch.tensor(
+                [example.features.state_values for example in decision_examples],
+                dtype=torch.float32,
+            )
+            targets = torch.tensor(
+                [example.target_score for example in decision_examples],
+                dtype=torch.float32,
+            )
+            predictions = model(players, states, decision_type=decision_type)
+            total_loss = total_loss + loss_function(predictions, targets).mean()
+        total_loss = total_loss / len(grouped_examples)
         total_loss.backward()
         optimizer.step()
-        losses.append(float(total_loss.item()))
 
-    return losses[-1]
+        final_loss = float(total_loss.item())
+
+    return final_loss
