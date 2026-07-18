@@ -334,7 +334,7 @@ class FantasyManagerApp(tk.Tk):
         hero.pack(fill="x", pady=(0, 18))
         tk.Label(
             hero,
-            text="Your assistant coach is ready to be connected.",
+            text="Your multi-league assistant workspace is online.",
             bg=COLORS["accent_dark"],
             fg=COLORS["text"],
             font=("Segoe UI", 16, "bold"),
@@ -342,8 +342,8 @@ class FantasyManagerApp(tk.Tk):
         tk.Label(
             hero,
             text=(
-                "This shell is intentionally offline. Connect ESPN and trained "
-                "models in a later milestone."
+                "Demo connections are active across ESPN, Sleeper, and NFL Fantasy. "
+                "Live sync will replace this data later."
             ),
             bg=COLORS["accent_dark"],
             fg="#b8f7ef",
@@ -353,9 +353,13 @@ class FantasyManagerApp(tk.Tk):
         cards = tk.Frame(body, bg=COLORS["background"])
         cards.pack(fill="x", pady=(0, 22))
         cards.grid_columnconfigure((0, 1, 2), weight=1, uniform="cards")
-        self._create_card(cards, 0, "ESPN CONNECTION", "Not connected", "Add read-only sync later")
-        self._create_card(cards, 1, "CURRENT WEEK", "Preseason", "No league selected")
-        self._create_card(cards, 2, "ASSISTANT STATUS", "UI prototype", "Model integration pending")
+        self._create_card(
+            cards, 0, "CONNECTED LEAGUES", "4 leagues", "ESPN · Sleeper · NFL Fantasy"
+        )
+        self._create_card(cards, 1, "CURRENT WEEK", "Week 12", "Demo season snapshot")
+        self._create_card(
+            cards, 2, "ASSISTANT STATUS", "Online (demo)", "Models and reports simulated"
+        )
 
         section = tk.Frame(body, bg=COLORS["background"])
         section.pack(fill="both", expand=True)
@@ -739,14 +743,14 @@ class FantasyManagerApp(tk.Tk):
             ).grid(row=row, column=0, padx=18, pady=12, sticky="w")
             tk.Label(
                 connection_panel,
-                text="Not connected",
+                text="Demo connected",
                 bg=COLORS["surface"],
                 fg=COLORS["warning"],
                 font=("Segoe UI", 9),
             ).grid(row=row, column=1, padx=18, sticky="w")
             ttk.Button(
                 connection_panel,
-                text="Connect later",
+                text="Replace later",
                 style="Accent.TButton",
             ).grid(row=row, column=2, padx=18, pady=8)
 

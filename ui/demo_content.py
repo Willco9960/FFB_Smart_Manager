@@ -177,8 +177,8 @@ MODEL_STATUSES = (
     ),
     ModelStatus(
         "ESPN / Sleeper / NFL sync",
-        "Not connected",
-        "—",
-        "Connector integration is the next milestone",
+        "Demo connected",
+        "Today, 9:15 AM",
+        "Live connector integration is the next milestone",
     ),
 )
