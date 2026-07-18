@@ -85,3 +85,16 @@ python -u -m scripts.evaluate_manager_walk_forward --start-season 2021 --end-sea
 
 Each fold trains only on seasons before its validation/test seasons, saves its
 own checkpoint, and reports the next unseen season separately.
+
+## Launching the UI prototype
+
+The first desktop shell is intentionally offline and uses placeholder data.
+Launch it from the project root with:
+
+```powershell
+python -m scripts.run_ui
+```
+
+It includes Home, Draft Assistant, Lineup Coach, Waiver Wire, Trade Center,
+Models & Reports, and Settings views. ESPN and model connections will be added
+in later milestones.
