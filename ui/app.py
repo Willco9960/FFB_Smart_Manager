@@ -211,6 +211,14 @@ class FantasyManagerApp(tk.Tk):
             )
             button.pack(fill="x", padx=12, pady=2)
             self.nav_buttons[view.key] = button
+        self.operation_hint_label = tk.Label(
+            self.sidebar,
+            text="Focus a league to unlock\nDraft · Lineup · Waivers · Trades",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            justify="left",
+            font=("Segoe UI", 8),
+        )
 
         footer = tk.Frame(self.sidebar, bg=COLORS["surface"])
         footer.pack(side="bottom", fill="x", padx=20, pady=22)
@@ -365,10 +373,18 @@ class FantasyManagerApp(tk.Tk):
         else:
             text = f"Focused: {active_league.league_name}"
         self.scope_status_label.configure(text=text)
-        for view_key in OPERATIONAL_VIEWS:
-            self.nav_buttons[view_key].configure(
-                state="normal" if active_league is not None else "disabled"
-            )
+        for button in self.nav_buttons.values():
+            button.pack_forget()
+        for view in VIEW_DEFINITIONS:
+            button = self.nav_buttons[view.key]
+            if active_league is None and view.key in OPERATIONAL_VIEWS:
+                continue
+            button.configure(state="normal")
+            button.pack(fill="x", padx=12, pady=2)
+        if active_league is None:
+            self.operation_hint_label.pack(fill="x", padx=18, pady=(10, 0))
+        else:
+            self.operation_hint_label.pack_forget()
 
     def _render_header(self, view: ViewDefinition) -> None:
         header = tk.Frame(self.content, bg=COLORS["background"])
