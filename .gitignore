@@ -11,3 +11,4 @@ data/raw/*.csv
 data/processed/*.parquet
 !data/processed/.gitkeep
 data/models/*.pt
+data/models/**/*.pt

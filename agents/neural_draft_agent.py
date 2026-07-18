@@ -6,6 +6,7 @@ from fantasy_engine.league import League
 from fantasy_engine.player import Player
 from fantasy_engine.team import Team
 from models.manager_policy_nn import ManagerPolicyNetwork, create_draft_action_features
+from models.modular_manager_policy import create_modular_policy_features
 
 
 @dataclass
@@ -33,7 +34,20 @@ class NeuralDraftAgent:
 
         return max(
             eligible_players,
-            key=lambda player: self.policy_network.score_action(
-                create_draft_action_features(player, team, available_players)
-            ),
+            key=lambda player: self._score_player(player, team, available_players),
+        )
+
+    def _score_player(
+        self,
+        player: Player,
+        team: Team,
+        available_players: list[Player],
+    ) -> float:
+        if hasattr(self.policy_network, "score_draft_action"):
+            return self.policy_network.score_draft_action(
+                create_modular_policy_features(player, team, available_players)
+            )
+
+        return self.policy_network.score_action(
+            create_draft_action_features(player, team, available_players)
         )

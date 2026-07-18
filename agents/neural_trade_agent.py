@@ -6,9 +6,11 @@ from fantasy_engine.lineup import (
     LineupSlot,
     build_best_starting_lineup,
 )
+from fantasy_engine.player import Player
 from fantasy_engine.team import Team
 from fantasy_engine.transactions import TradeProposal
 from models.manager_policy_nn import ManagerPolicyNetwork, create_draft_action_features
+from models.modular_manager_policy import create_modular_policy_features
 
 
 @dataclass
@@ -42,24 +44,18 @@ class NeuralTradeAgent:
                 for requested_player in opposing_team.roster:
                     updated_team = Team(
                         name=team.name,
-                        roster=[
-                            player for player in team.roster if player != offered_player
-                        ]
+                        roster=[player for player in team.roster if player != offered_player]
                         + [requested_player],
                     )
                     updated_opposing_team = Team(
                         name=opposing_team.name,
                         roster=[
-                            player
-                            for player in opposing_team.roster
-                            if player != requested_player
+                            player for player in opposing_team.roster if player != requested_player
                         ]
                         + [offered_player],
                     )
                     updated_team_score = self.get_projected_lineup_score(updated_team)
-                    updated_opposing_score = self.get_projected_lineup_score(
-                        updated_opposing_team
-                    )
+                    updated_opposing_score = self.get_projected_lineup_score(updated_opposing_team)
 
                     if updated_team_score is None or updated_opposing_score is None:
                         continue
@@ -74,19 +70,12 @@ class NeuralTradeAgent:
                         continue
 
                     action_score = (
-                        self.policy_network.score_action(
-                            create_draft_action_features(
-                                requested_player,
-                                team,
-                                team.roster,
-                            )
-                        )
-                        + self.policy_network.score_action(
-                            create_draft_action_features(
-                                offered_player,
-                                opposing_team,
-                                opposing_team.roster,
-                            )
+                        self._score_player(requested_player, team, team.roster, week)
+                        + self._score_player(
+                            offered_player,
+                            opposing_team,
+                            opposing_team.roster,
+                            week,
                         )
                         + team_improvement
                         + opposing_improvement
@@ -103,6 +92,20 @@ class NeuralTradeAgent:
                         )
 
         return best_proposal
+
+    def _score_player(
+        self,
+        player: Player,
+        team: Team,
+        roster: list[Player],
+        week: int,
+    ) -> float:
+        if hasattr(self.policy_network, "score_trade_action"):
+            return self.policy_network.score_trade_action(
+                create_modular_policy_features(player, team, roster, week)
+            )
+
+        return self.policy_network.score_action(create_draft_action_features(player, team, roster))
 
     def get_projected_lineup_score(self, team: Team) -> float | None:
         lineup = build_best_starting_lineup(

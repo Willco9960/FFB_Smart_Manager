@@ -10,6 +10,7 @@ from fantasy_engine.player import Player
 from fantasy_engine.team import Team
 from fantasy_engine.transactions import WaiverClaim
 from models.manager_policy_nn import ManagerPolicyNetwork, create_draft_action_features
+from models.modular_manager_policy import create_modular_policy_features
 
 
 @dataclass
@@ -35,9 +36,7 @@ class NeuralWaiverAgent:
 
         for add_player in available_players:
             for drop_player in team.roster:
-                updated_roster = [
-                    player for player in team.roster if player != drop_player
-                ]
+                updated_roster = [player for player in team.roster if player != drop_player]
                 updated_roster.append(add_player)
                 updated_team = Team(name=team.name, roster=updated_roster)
                 updated_score = self.get_projected_lineup_score(updated_team)
@@ -50,9 +49,9 @@ class NeuralWaiverAgent:
                 if improvement < self.minimum_lineup_improvement:
                     continue
 
-                action_score = self.policy_network.score_action(
-                    create_draft_action_features(add_player, team, available_players)
-                ) + improvement
+                action_score = (
+                    self._score_player(add_player, team, available_players, week) + improvement
+                )
 
                 if action_score > best_action_score:
                     best_action_score = action_score
@@ -64,6 +63,22 @@ class NeuralWaiverAgent:
                     )
 
         return best_choice
+
+    def _score_player(
+        self,
+        player: Player,
+        team: Team,
+        available_players: list[Player],
+        week: int,
+    ) -> float:
+        if hasattr(self.policy_network, "score_waiver_action"):
+            return self.policy_network.score_waiver_action(
+                create_modular_policy_features(player, team, available_players, week)
+            )
+
+        return self.policy_network.score_action(
+            create_draft_action_features(player, team, available_players)
+        )
 
     def get_projected_lineup_score(self, team: Team) -> float | None:
         lineup = build_best_starting_lineup(
