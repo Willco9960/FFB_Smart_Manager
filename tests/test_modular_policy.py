@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from agents.neural_draft_agent import NeuralDraftAgent
 from agents.neural_lineup_agent import NeuralLineupAgent
 from evolution.modular_behavior_cloning import (
@@ -127,3 +129,21 @@ def test_modular_policy_accepts_legacy_state_feature_width():
     features = create_modular_policy_features(player, team, [player])
 
     assert isinstance(model.score_draft_action(features), float)
+
+
+def test_modular_policy_batch_scores_match_scalar_scores():
+    model = ModularManagerPolicyNetwork()
+    team = Team(name="Team")
+    players = [
+        create_player("RB1", "RB", 18.0),
+        create_player("WR1", "WR", 17.0),
+    ]
+    features = [
+        create_modular_policy_features(player, team, players)
+        for player in players
+    ]
+
+    batch_scores = model.score_decisions(features, "draft")
+    scalar_scores = [model.score_draft_action(item) for item in features]
+
+    assert batch_scores == pytest.approx(scalar_scores)

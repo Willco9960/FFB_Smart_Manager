@@ -138,9 +138,42 @@ class ModularManagerPolicyNetwork(nn.Module):
         features: ModularPolicyFeatures,
         decision_type: str,
     ) -> float:
+        return self.score_decisions([features], decision_type)[0]
+
+    def score_decisions(
+        self,
+        features: list[ModularPolicyFeatures],
+        decision_type: str,
+    ) -> list[float]:
+        """Score many candidate actions in one forward pass.
+
+        Drafting evaluates the entire available player pool for every pick.
+        Keeping that work batched avoids creating and executing one tiny
+        tensor operation per player while preserving the existing scalar API.
+        """
+
+        if decision_type not in DECISION_TYPES:
+            raise ValueError(f"Unknown decision type: {decision_type}")
+        if not features:
+            return []
+
         self.eval()
+        player_values = torch.tensor(
+            [item.player_values for item in features],
+            dtype=torch.float32,
+        )
+        state_values = torch.tensor(
+            [self._fit_state_features(item.state_values) for item in features],
+            dtype=torch.float32,
+        )
         with torch.no_grad():
-            return float(self.decision_heads[decision_type](self.encode(features)).item())
+            scores = self.forward(
+                player_features=player_values,
+                state_features=state_values,
+                decision_type=decision_type,
+            )
+
+        return [float(score) for score in scores.tolist()]
 
     def score_draft_action(self, features: ModularPolicyFeatures) -> float:
         return self.score_decision(features, "draft")

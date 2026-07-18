@@ -32,6 +32,14 @@ class NeuralDraftAgent:
                 league=league,
             )
 
+        if hasattr(self.policy_network, "score_decisions"):
+            features = [
+                create_modular_policy_features(player, team, available_players)
+                for player in eligible_players
+            ]
+            scores = self.policy_network.score_decisions(features, "draft")
+            return max(zip(scores, eligible_players, strict=True), key=lambda item: item[0])[1]
+
         return max(
             eligible_players,
             key=lambda player: self._score_player(player, team, available_players),
