@@ -4,6 +4,8 @@ import argparse
 from pathlib import Path
 
 from agents.genome_draft_agent import GenomeDraftAgent
+from agents.trade_agent import GenomeTradeAgent
+from agents.waiver_agent import GenomeWaiverAgent
 from evolution.genome import create_random_genome
 from evolution.modular_behavior_cloning import (
     ModularImitationExample,
@@ -15,12 +17,13 @@ from evolution.offline_replay import (
     DecisionReplayRecord,
     train_offline_policy,
 )
-from fantasy_engine.draft import get_snake_draft_order
+from fantasy_engine.draft import get_snake_draft_order, run_snake_draft
 from fantasy_engine.league import League
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES
 from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import load_weekly_performances
+from fantasy_engine.weekly_season_simulation import run_historical_regular_season
 from models.modular_manager_policy import (
     ModularManagerPolicyNetwork,
     create_modular_policy_features,
@@ -39,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selection", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--offline-epochs", type=int, default=50)
+    parser.add_argument(
+        "--collect-season-replay",
+        action="store_true",
+        help="Collect leakage-safe lineup, waiver, and trade replay records from training seasons.",
+    )
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
     return parser.parse_args()
 
@@ -86,6 +94,35 @@ def collect_draft_examples(
     return examples
 
 
+def collect_season_replay(
+    seasons: list[int],
+    genome,
+) -> DecisionReplayBuffer:
+    replay_buffer = DecisionReplayBuffer()
+    for season in seasons:
+        league = create_training_league(season)
+        draft_agent = GenomeDraftAgent(genome)
+        team_agents = {team.name: draft_agent for team in league.teams}
+        run_snake_draft(league, rounds=16, team_agents=team_agents)
+        waiver_agents = {
+            team.name: GenomeWaiverAgent(genome=genome)
+            for team in league.teams
+        }
+        trade_agents = {
+            team.name: GenomeTradeAgent(genome=genome)
+            for team in league.teams
+        }
+        result = run_historical_regular_season(
+            league=league,
+            performances=load_weekly_performances(season, include_special_teams=True),
+            waiver_agents=waiver_agents,
+            trade_agents=trade_agents,
+            season=season,
+        )
+        replay_buffer.extend(result.decision_replay_records)
+    return replay_buffer
+
+
 def main() -> None:
     args = parse_args()
     model = ModularManagerPolicyNetwork()
@@ -107,6 +144,13 @@ def main() -> None:
             for index, example in enumerate(examples)
         ]
     )
+    if args.collect_season_replay:
+        replay_buffer.extend(
+            collect_season_replay(
+                list(range(args.start_season, args.end_season + 1)),
+                teacher.genome,
+            ).records
+        )
     offline_loss = train_offline_policy(
         model,
         replay_buffer,

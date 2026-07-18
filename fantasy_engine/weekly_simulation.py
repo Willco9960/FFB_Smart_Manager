@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 from agents.neural_lineup_agent import LineupAgent
+from evolution.offline_replay import DecisionReplayRecord
 from fantasy_engine.lineup import (
     ESPN_OFFENSIVE_LINEUP_RULES,
     LineupSlot,
@@ -12,6 +13,7 @@ from fantasy_engine.season import ScheduledMatchup, TeamStanding, record_matchup
 from fantasy_engine.team import Team
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_projection import create_weekly_projected_roster
+from models.modular_manager_policy import create_modular_policy_features
 from models.weekly_projection_service import WeeklyNeuralProjectionService
 
 
@@ -72,6 +74,8 @@ def score_adaptive_weekly_team(
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     lineup_agent: LineupAgent | None = None,
     projection_service: WeeklyNeuralProjectionService | None = None,
+    replay_records: list[DecisionReplayRecord] | None = None,
+    season: int = 0,
 ) -> tuple[StartingLineup, float]:
     weekly_points_by_player = get_weekly_points_by_player(performances, week)
     if projection_service is None:
@@ -80,12 +84,33 @@ def score_adaptive_weekly_team(
         projected_roster = projection_service.project_roster(team.roster, performances, week)
     projected_team = Team(name=team.name, roster=projected_roster)
 
-    return score_weekly_team(
+    starting_lineup, score = score_weekly_team(
         projected_team,
         weekly_points_by_player,
         lineup_rules,
         lineup_agent,
     )
+    if replay_records is not None:
+        for player in starting_lineup.players:
+            replay_records.append(
+                DecisionReplayRecord(
+                    season=season,
+                    week=week,
+                    decision_type="lineup",
+                    action_key=player.name,
+                    features=create_modular_policy_features(
+                        player,
+                        projected_team,
+                        projected_roster,
+                        current_week=week,
+                    ),
+                    reward=player.actual_score,
+                    team_name=team.name,
+                    source="historical_lineup",
+                )
+            )
+
+    return starting_lineup, score
 
 
 def simulate_historical_week(
@@ -97,6 +122,8 @@ def simulate_historical_week(
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     lineup_agents: dict[str, LineupAgent] | None = None,
     projection_service: WeeklyNeuralProjectionService | None = None,
+    replay_records: list[DecisionReplayRecord] | None = None,
+    season: int = 0,
 ) -> dict[str, float]:
     teams_by_name = {team.name: team for team in teams}
     weekly_scores = {}
@@ -114,6 +141,8 @@ def simulate_historical_week(
             lineup_rules,
             None if lineup_agents is None else lineup_agents.get(first_team.name),
             projection_service,
+            replay_records,
+            season,
         )
         _, second_team_score = score_adaptive_weekly_team(
             second_team,
@@ -122,6 +151,8 @@ def simulate_historical_week(
             lineup_rules,
             None if lineup_agents is None else lineup_agents.get(second_team.name),
             projection_service,
+            replay_records,
+            season,
         )
         weekly_scores[first_team.name] = first_team_score
         weekly_scores[second_team.name] = second_team_score

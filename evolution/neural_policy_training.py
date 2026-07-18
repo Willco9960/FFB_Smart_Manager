@@ -290,6 +290,7 @@ def evaluate_agents_across_season_scenarios(
                     seed=seed + scenario_index,
                     transaction_genome_fallback=transaction_genome,
                     projection_service=scenario.projection_service,
+                    season=scenario.season,
                 )
             )
             scenario_index += 1

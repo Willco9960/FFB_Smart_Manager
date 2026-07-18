@@ -20,6 +20,7 @@ class DecisionReplayRecord:
     action_key: str
     features: ModularPolicyFeatures
     reward: float
+    team_name: str = ""
     source: str = "historical"
 
     def __post_init__(self) -> None:

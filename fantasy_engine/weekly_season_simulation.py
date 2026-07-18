@@ -1,8 +1,9 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from agents.neural_lineup_agent import LineupAgent
 from agents.trade_agent import TradeAgent
 from agents.waiver_agent import WaiverAgent
+from evolution.offline_replay import DecisionReplayRecord
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
 from fantasy_engine.season import (
@@ -27,6 +28,7 @@ from fantasy_engine.transactions import (
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_projection import create_weekly_projected_roster
 from fantasy_engine.weekly_simulation import simulate_historical_week
+from models.modular_manager_policy import create_modular_policy_features
 from models.weekly_projection_service import WeeklyNeuralProjectionService
 
 
@@ -39,6 +41,7 @@ class RegularSeasonSimulationResult:
     weekly_standings: dict[int, list[TeamStanding]]
     weekly_transactions: dict[int, list[Transaction]]
     weekly_transaction_impacts: dict[int, list[TransactionImpact]]
+    decision_replay_records: list[DecisionReplayRecord] = field(default_factory=list)
 
     def ranked_standings(self) -> list[TeamStanding]:
         return rank_standings(self.standings)
@@ -53,6 +56,7 @@ def run_historical_regular_season(
     trade_agents: dict[str, TradeAgent] | None = None,
     lineup_agents: dict[str, LineupAgent] | None = None,
     projection_service: WeeklyNeuralProjectionService | None = None,
+    season: int = 0,
 ) -> RegularSeasonSimulationResult:
     team_names = [team.name for team in league.teams]
     schedule = create_regular_season_schedule(team_names, rules)
@@ -62,6 +66,7 @@ def run_historical_regular_season(
     weekly_transactions = {}
     weekly_transaction_impacts = {}
     transaction_tracker = TransactionValueTracker()
+    decision_replay_records: list[DecisionReplayRecord] = []
 
     for week in range(1, rules.regular_season_weeks + 1):
         weekly_transactions[week] = run_weekly_trades(
@@ -71,6 +76,8 @@ def run_historical_regular_season(
             week=week,
             trade_agents=trade_agents,
             projection_service=projection_service,
+            replay_records=decision_replay_records,
+            season=season,
         )
         weekly_transactions[week].extend(run_weekly_waivers(
             league=league,
@@ -79,6 +86,8 @@ def run_historical_regular_season(
             week=week,
             waiver_agents=waiver_agents,
             projection_service=projection_service,
+            replay_records=decision_replay_records,
+            season=season,
         ))
         transaction_tracker.register(weekly_transactions[week])
         weekly_scores[week] = simulate_historical_week(
@@ -90,6 +99,8 @@ def run_historical_regular_season(
             lineup_rules=lineup_rules,
             lineup_agents=lineup_agents,
             projection_service=projection_service,
+            replay_records=decision_replay_records,
+            season=season,
         )
         weekly_points_by_player = {
             (performance.player_name, performance.position): performance.fantasy_points
@@ -99,6 +110,10 @@ def run_historical_regular_season(
         weekly_transaction_impacts[week] = transaction_tracker.evaluate_week(
             week,
             weekly_points_by_player,
+        )
+        decision_replay_records = apply_transaction_rewards(
+            decision_replay_records,
+            weekly_transaction_impacts[week],
         )
         weekly_standings[week] = [replace(standing) for standing in rank_standings(standings)]
 
@@ -110,7 +125,26 @@ def run_historical_regular_season(
         weekly_standings=weekly_standings,
         weekly_transactions=weekly_transactions,
         weekly_transaction_impacts=weekly_transaction_impacts,
+        decision_replay_records=decision_replay_records,
     )
+
+
+def apply_transaction_rewards(
+    records: list[DecisionReplayRecord],
+    impacts: list[TransactionImpact],
+) -> list[DecisionReplayRecord]:
+    updated = list(records)
+    for impact in impacts:
+        incoming_key = ",".join(impact.incoming_player_names)
+        for index, record in enumerate(updated):
+            if (
+                record.week == impact.week
+                and record.team_name == impact.team_name
+                and record.decision_type == impact.transaction_type
+                and record.action_key == incoming_key
+            ):
+                updated[index] = replace(record, reward=record.reward + impact.reward)
+    return updated
 
 
 def run_weekly_waivers(
@@ -120,6 +154,8 @@ def run_weekly_waivers(
     week: int,
     waiver_agents: dict[str, WaiverAgent] | None,
     projection_service: WeeklyNeuralProjectionService | None = None,
+    replay_records: list[DecisionReplayRecord] | None = None,
+    season: int = 0,
 ) -> list[Transaction]:
     if waiver_agents is None:
         return []
@@ -166,6 +202,25 @@ def run_weekly_waivers(
         if projected_claim is None:
             continue
 
+        if replay_records is not None:
+            replay_records.append(
+                DecisionReplayRecord(
+                    season=season,
+                    week=week,
+                    decision_type="waiver",
+                    action_key=projected_claim.add_player.name,
+                    features=create_modular_policy_features(
+                        projected_claim.add_player,
+                        projected_team,
+                        projected_available_players,
+                        current_week=week,
+                    ),
+                    reward=0.0,
+                    team_name=team.name,
+                    source="historical_waiver",
+                )
+            )
+
         original_add_player = next(
             player
             for player in league.available_players
@@ -206,6 +261,8 @@ def run_weekly_trades(
     week: int,
     trade_agents: dict[str, TradeAgent] | None,
     projection_service: WeeklyNeuralProjectionService | None = None,
+    replay_records: list[DecisionReplayRecord] | None = None,
+    season: int = 0,
 ) -> list[Transaction]:
     if trade_agents is None:
         return []
@@ -257,6 +314,52 @@ def run_weekly_trades(
 
         if projected_proposal is None:
             continue
+
+        if replay_records is not None:
+            requested_key = ",".join(
+                player.name for player in projected_proposal.requested_players
+            )
+            offered_key = ",".join(
+                player.name for player in projected_proposal.offered_players
+            )
+            replay_records.extend(
+                [
+                    DecisionReplayRecord(
+                        season=season,
+                        week=week,
+                        decision_type="trade",
+                        action_key=requested_key,
+                        features=create_modular_policy_features(
+                            projected_proposal.requested_players[0],
+                            projected_team,
+                            projected_team.roster,
+                            current_week=week,
+                        ),
+                        reward=0.0,
+                        team_name=team_name,
+                        source="historical_trade",
+                    ),
+                    DecisionReplayRecord(
+                        season=season,
+                        week=week,
+                        decision_type="trade",
+                        action_key=offered_key,
+                        features=create_modular_policy_features(
+                            projected_proposal.offered_players[0],
+                            projected_teams_by_name[
+                                projected_proposal.receiving_team_name
+                            ],
+                            projected_teams_by_name[
+                                projected_proposal.receiving_team_name
+                            ].roster,
+                            current_week=week,
+                        ),
+                        reward=0.0,
+                        team_name=projected_proposal.receiving_team_name,
+                        source="historical_trade",
+                    ),
+                ]
+            )
 
         original_proposing_team = original_teams_by_name[projected_proposal.proposing_team_name]
         original_receiving_team = original_teams_by_name[projected_proposal.receiving_team_name]

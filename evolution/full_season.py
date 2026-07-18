@@ -91,6 +91,7 @@ def evaluate_full_season_battle_royale(
     seed: int = 1,
     transaction_genome_fallback=None,
     projection_service: WeeklyNeuralProjectionService | None = None,
+    season: int = 0,
 ) -> list[EvaluatedAgent]:
     if len(agents) % len(league.teams) != 0:
         raise ValueError("Population size must be divisible by the league team count.")
@@ -150,6 +151,7 @@ def evaluate_full_season_battle_royale(
             trade_agents=trade_agents,
             lineup_agents=lineup_agents,
             projection_service=projection_service,
+            season=season,
         )
         playoff_result = simulate_espn_six_team_playoffs(
             league=simulated_league,
