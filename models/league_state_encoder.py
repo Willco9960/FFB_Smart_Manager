@@ -24,6 +24,10 @@ LEAGUE_STATE_FEATURE_NAMES = (
     "team_projected_points",
     "best_available_projection",
     "current_week",
+    "projection_uncertainty",
+    "opponent_strength",
+    "standing_win_rate",
+    "playoff_probability",
 )
 
 
@@ -36,6 +40,10 @@ def create_league_state_features(
     available_players: list[Player],
     current_week: int = 0,
     regular_season_weeks: int = 14,
+    projection_uncertainty: float = 0.0,
+    opponent_strength: float = 0.0,
+    standing_win_rate: float = 0.0,
+    playoff_probability: float = 0.0,
 ) -> tuple[float, ...]:
     """Create normalized state features for a team decision.
 
@@ -60,6 +68,10 @@ def create_league_state_features(
         float(team.projected_score()) / 1000.0,
         max((player.projected_score for player in available_players), default=0.0) / 500.0,
         float(current_week) / max(float(regular_season_weeks), 1.0),
+        float(projection_uncertainty) / 100.0,
+        float(opponent_strength) / 100.0,
+        float(standing_win_rate),
+        float(playoff_probability),
     )
 
 

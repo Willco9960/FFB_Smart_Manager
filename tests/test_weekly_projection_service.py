@@ -61,3 +61,31 @@ def test_calibrated_weights_are_opt_in():
     )
 
     assert service.predict_player(player, [], week=2) == 20.0
+
+
+def test_service_exposes_uncertainty_from_neural_and_heuristic_predictions():
+    service = WeeklyNeuralProjectionService(
+        training_result=None,
+        predictions={(2, "Test RB", "RB"): 20.0},
+    )
+    player = Player(
+        name="Test RB",
+        position="RB",
+        team="ATL",
+        projected_score=210.0,
+    )
+    performances = [
+        WeeklyPlayerPerformance(
+            player_id="test-rb",
+            player_name="Test RB",
+            position="RB",
+            team="ATL",
+            week=1,
+            fantasy_points=10.0,
+        )
+    ]
+
+    prediction = service.predict_player_with_uncertainty(player, performances, week=2)
+
+    assert prediction.expected_points == 15.75
+    assert prediction.uncertainty > 0.0

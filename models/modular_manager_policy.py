@@ -24,6 +24,10 @@ def create_modular_policy_features(
     team,
     available_players,
     current_week: int = 0,
+    projection_uncertainty: float = 0.0,
+    opponent_strength: float = 0.0,
+    standing_win_rate: float = 0.0,
+    playoff_probability: float = 0.0,
 ) -> ModularPolicyFeatures:
     """Adapt existing action features into the shared modular representation."""
 
@@ -37,6 +41,10 @@ def create_modular_policy_features(
             team,
             available_players,
             current_week=current_week,
+            projection_uncertainty=projection_uncertainty,
+            opponent_strength=opponent_strength,
+            standing_win_rate=standing_win_rate,
+            playoff_probability=playoff_probability,
         ),
     )
 
@@ -92,8 +100,15 @@ class ModularManagerPolicyNetwork(nn.Module):
 
     def encode(self, features: ModularPolicyFeatures) -> torch.Tensor:
         player = torch.tensor([features.player_values], dtype=torch.float32)
-        state = torch.tensor([features.state_values], dtype=torch.float32)
+        state = torch.tensor([self._fit_state_features(features.state_values)], dtype=torch.float32)
         return torch.cat((self.player_encoder(player), self.state_encoder(state)), dim=1)
+
+    def _fit_state_features(self, values: tuple[float, ...]) -> tuple[float, ...]:
+        """Keep checkpoints trained before context features backward compatible."""
+
+        if len(values) < self.state_feature_count:
+            return values + (0.0,) * (self.state_feature_count - len(values))
+        return values[: self.state_feature_count]
 
     def forward(
         self,
@@ -103,6 +118,15 @@ class ModularManagerPolicyNetwork(nn.Module):
     ) -> torch.Tensor:
         if decision_type not in DECISION_TYPES:
             raise ValueError(f"Unknown decision type: {decision_type}")
+        if state_features.shape[1] < self.state_feature_count:
+            padding = torch.zeros(
+                (state_features.shape[0], self.state_feature_count - state_features.shape[1]),
+                dtype=state_features.dtype,
+                device=state_features.device,
+            )
+            state_features = torch.cat((state_features, padding), dim=1)
+        elif state_features.shape[1] > self.state_feature_count:
+            state_features = state_features[:, : self.state_feature_count]
         encoded = torch.cat(
             (self.player_encoder(player_features), self.state_encoder(state_features)),
             dim=1,

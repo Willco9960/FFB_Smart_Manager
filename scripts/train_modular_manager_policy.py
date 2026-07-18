@@ -10,6 +10,11 @@ from evolution.modular_behavior_cloning import (
     train_modular_behavior_policy,
 )
 from evolution.modular_policy_training import train_modular_policy_self_play
+from evolution.offline_replay import (
+    DecisionReplayBuffer,
+    DecisionReplayRecord,
+    train_offline_policy,
+)
 from fantasy_engine.draft import get_snake_draft_order
 from fantasy_engine.league import League
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
@@ -33,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generations", type=int, default=3)
     parser.add_argument("--selection", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--offline-epochs", type=int, default=50)
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
     return parser.parse_args()
 
@@ -87,6 +93,25 @@ def main() -> None:
     first_league = create_training_league(args.start_season)
     examples = collect_draft_examples(first_league, teacher)
     imitation_loss = train_modular_behavior_policy(model, examples, epochs=args.epochs)
+    replay_buffer = DecisionReplayBuffer(
+        [
+            DecisionReplayRecord(
+                season=args.start_season,
+                week=0,
+                decision_type="draft",
+                action_key=str(index),
+                features=example.features,
+                reward=example.target_score,
+                source="historical_teacher",
+            )
+            for index, example in enumerate(examples)
+        ]
+    )
+    offline_loss = train_offline_policy(
+        model,
+        replay_buffer,
+        epochs=args.offline_epochs,
+    )
 
     scenarios = [
         (
@@ -108,6 +133,8 @@ def main() -> None:
     print("Modular manager policy training complete")
     print(f"Behavioral examples: {len(examples)}")
     print(f"Behavioral cloning loss: {imitation_loss:.6f}")
+    print(f"Offline replay records: {len(replay_buffer)}")
+    print(f"Offline replay loss: {offline_loss:.6f}")
     print(f"Self-play best fitness by generation: {history}")
     print(f"Policy saved to: {model_path}")
 

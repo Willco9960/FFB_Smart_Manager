@@ -118,3 +118,12 @@ def test_existing_neural_agents_route_to_modular_heads():
 
     assert selected in players
     assert lineup.players
+
+
+def test_modular_policy_accepts_legacy_state_feature_width():
+    model = ModularManagerPolicyNetwork(state_feature_count=15)
+    team = Team(name="Team")
+    player = create_player("RB", "RB", 18.0)
+    features = create_modular_policy_features(player, team, [player])
+
+    assert isinstance(model.score_draft_action(features), float)

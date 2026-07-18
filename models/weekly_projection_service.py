@@ -20,6 +20,7 @@ from models.draft_projection_nn import (
     ProjectionTrainingResult,
     predict_points,
 )
+from models.projection_ensemble import ProjectionPrediction, combine_predictions
 from models.weekly_projection_nn import (
     calculate_weekly_heuristic_projection,
     convert_weekly_examples,
@@ -113,6 +114,19 @@ class WeeklyNeuralProjectionService:
 
         history = get_player_history_before_week(performances, player, week)
         return calculate_weekly_projection(player, history)
+
+    def predict_player_with_uncertainty(
+        self,
+        player: Player,
+        performances: list[WeeklyPlayerPerformance],
+        week: int,
+    ) -> ProjectionPrediction:
+        """Blend the neural forecast with the leakage-safe heuristic baseline."""
+
+        neural_prediction = self.predict_player(player, performances, week)
+        history = get_player_history_before_week(performances, player, week)
+        heuristic_prediction = calculate_weekly_projection(player, history)
+        return combine_predictions([neural_prediction, heuristic_prediction])
 
     def project_roster(
         self,
