@@ -9,6 +9,8 @@ import tkinter as tk
 from dataclasses import dataclass
 from tkinter import ttk
 
+from ui.league_state import LeagueSummary, LeagueWorkspace
+
 COLORS = {
     "background": "#0f172a",
     "surface": "#172033",
@@ -83,6 +85,7 @@ class FantasyManagerApp(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
+        self.league_workspace = LeagueWorkspace()
         self.title("Fantasy Football AI Manager")
         self.geometry("1180x760")
         self.minsize(980, 640)
@@ -181,13 +184,14 @@ class FantasyManagerApp(tk.Tk):
             fg=COLORS["muted"],
             font=("Segoe UI", 8, "bold"),
         ).pack(anchor="w")
-        tk.Label(
+        self.scope_status_label = tk.Label(
             footer,
             text="No league connected yet",
             bg=COLORS["surface"],
             fg=COLORS["warning"],
             font=("Segoe UI", 9),
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        self.scope_status_label.pack(anchor="w", pady=(4, 0))
 
         self.content = ttk.Frame(shell, style="Content.TFrame")
         self.content.pack(side="left", fill="both", expand=True)
@@ -211,9 +215,54 @@ class FantasyManagerApp(tk.Tk):
         else:
             self._render_placeholder(view)
 
+    def open_league(self, league_id: str) -> None:
+        """Focus the UI on one league while keeping all others connected."""
+
+        self.league_workspace.select(league_id)
+        self._update_scope_status()
+        self.show_view("home")
+
+    def show_all_leagues(self) -> None:
+        """Return to the cross-platform overview."""
+
+        self.league_workspace.clear_selection()
+        self._update_scope_status()
+        self.show_view("home")
+
+    def _update_scope_status(self) -> None:
+        active_league = self.league_workspace.active_league
+        if active_league is None:
+            text = f"{len(self.league_workspace.leagues)} leagues connected"
+        else:
+            text = f"Focused: {active_league.league_name}"
+        self.scope_status_label.configure(text=text)
+
     def _render_header(self, view: ViewDefinition) -> None:
         header = tk.Frame(self.content, bg=COLORS["background"])
         header.pack(fill="x", padx=42, pady=(34, 24))
+        scope = tk.Frame(header, bg=COLORS["background"])
+        scope.pack(fill="x", pady=(0, 14))
+        active_league = self.league_workspace.active_league
+        if active_league is None:
+            scope_text = "ALL CONNECTED LEAGUES"
+            scope_color = COLORS["accent"]
+        else:
+            scope_text = f"FOCUSED LEAGUE · {active_league.display_name.upper()}"
+            scope_color = COLORS["warning"]
+        tk.Label(
+            scope,
+            text=scope_text,
+            bg=COLORS["background"],
+            fg=scope_color,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left")
+        if active_league is not None:
+            ttk.Button(
+                scope,
+                text="View All Leagues",
+                style="Accent.TButton",
+                command=self.show_all_leagues,
+            ).pack(side="right")
         tk.Label(
             header,
             text=view.title,
@@ -240,6 +289,10 @@ class FantasyManagerApp(tk.Tk):
         self._render_header(view)
         body = tk.Frame(self.content, bg=COLORS["background"])
         body.pack(fill="both", expand=True, padx=42, pady=(0, 34))
+
+        if self.league_workspace.active_league is not None:
+            self._render_focused_league_home(body, self.league_workspace.active_league)
+            return
 
         hero = tk.Frame(body, bg=COLORS["accent_dark"])
         hero.pack(fill="x", pady=(0, 18))
@@ -272,17 +325,107 @@ class FantasyManagerApp(tk.Tk):
         section.pack(fill="both", expand=True)
         tk.Label(
             section,
-            text="Explore the workspace",
+            text="Connected leagues",
             bg=COLORS["background"],
             fg=COLORS["text"],
             font=("Segoe UI", 14, "bold"),
         ).pack(anchor="w", pady=(0, 12))
         tk.Label(
             section,
-            text="Use the navigation on the left to preview each major assistant area.",
+            text="Select a league to focus every assistant view on that platform and roster.",
             bg=COLORS["background"],
             fg=COLORS["muted"],
             font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(0, 12))
+        self._render_league_rows(section)
+
+    def _render_league_rows(self, parent: tk.Frame) -> None:
+        panel = tk.Frame(
+            parent,
+            bg=COLORS["surface"],
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+        )
+        panel.pack(fill="x")
+        for row, league in enumerate(self.league_workspace.leagues):
+            panel.grid_rowconfigure(row, weight=1)
+            self._create_league_row(panel, row, league)
+
+    def _create_league_row(self, parent: tk.Frame, row: int, league: LeagueSummary) -> None:
+        row_frame = tk.Frame(parent, bg=COLORS["surface"])
+        row_frame.grid(row=row, column=0, sticky="ew", padx=18, pady=(14 if row == 0 else 7, 7))
+        row_frame.grid_columnconfigure(1, weight=1)
+        tk.Label(
+            row_frame,
+            text=league.platform.upper(),
+            bg=COLORS["surface"],
+            fg=COLORS["accent"],
+            font=("Segoe UI", 8, "bold"),
+            width=12,
+            anchor="w",
+        ).grid(row=0, column=0, rowspan=2, sticky="nw")
+        tk.Label(
+            row_frame,
+            text=league.league_name,
+            bg=COLORS["surface"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+        ).grid(row=0, column=1, sticky="w")
+        tk.Label(
+            row_frame,
+            text=f"{league.team_name} · {league.record} · {league.matchup}",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).grid(row=1, column=1, sticky="w")
+        tk.Label(
+            row_frame,
+            text=f"Proj. {league.projected_points:.1f}",
+            bg=COLORS["surface"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=2, rowspan=2, padx=18)
+        ttk.Button(
+            row_frame,
+            text="Open League",
+            style="Accent.TButton",
+            command=lambda league_id=league.league_id: self.open_league(league_id),
+        ).grid(row=0, column=3, rowspan=2)
+
+    def _render_focused_league_home(self, body: tk.Frame, league: LeagueSummary) -> None:
+        hero = tk.Frame(body, bg=COLORS["accent_dark"])
+        hero.pack(fill="x", pady=(0, 18))
+        tk.Label(
+            hero,
+            text=f"{league.team_name} · {league.league_name}",
+            bg=COLORS["accent_dark"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 16, "bold"),
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+        tk.Label(
+            hero,
+            text=f"{league.platform} · {league.matchup} · {league.sync_status}",
+            bg=COLORS["accent_dark"],
+            fg="#b8f7ef",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=24, pady=(0, 20))
+
+        cards = tk.Frame(body, bg=COLORS["background"])
+        cards.pack(fill="x", pady=(0, 22))
+        cards.grid_columnconfigure((0, 1, 2), weight=1, uniform="cards")
+        self._create_card(cards, 0, "RECORD", league.record, "Current season")
+        self._create_card(cards, 1, "POINTS FOR", f"{league.points_for:.1f}", "Scored so far")
+        self._create_card(
+            cards, 2, "MATCHUP PROJECTION", f"{league.projected_points:.1f}", league.matchup
+        )
+
+        ttk.Button(
+            body,
+            text="Back to All Leagues",
+            style="Accent.TButton",
+            command=self.show_all_leagues,
         ).pack(anchor="w")
 
     def _create_card(
@@ -320,7 +463,10 @@ class FantasyManagerApp(tk.Tk):
         ).pack(anchor="w", padx=28, pady=(30, 8))
         tk.Label(
             panel,
-            text="This workspace is ready for the next implementation milestone.",
+            text=(
+                "This workspace is ready for the next implementation milestone. "
+                "Select a league from Home to focus its data here."
+            ),
             bg=COLORS["surface"],
             fg=COLORS["muted"],
             font=("Segoe UI", 11),
