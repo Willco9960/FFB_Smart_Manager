@@ -9,6 +9,13 @@ import tkinter as tk
 from dataclasses import dataclass
 from tkinter import ttk
 
+from ui.demo_content import (
+    DRAFT_RECOMMENDATIONS,
+    LINEUP_DECISIONS,
+    MODEL_STATUSES,
+    TRADE_IDEAS,
+    WAIVER_TARGETS,
+)
 from ui.league_state import LeagueSummary, LeagueWorkspace
 
 COLORS = {
@@ -131,6 +138,23 @@ class FantasyManagerApp(tk.Tk):
             padding=(14, 9),
             font=("Segoe UI", 10, "bold"),
         )
+        style.configure(
+            "Demo.Treeview",
+            background=COLORS["surface"],
+            fieldbackground=COLORS["surface"],
+            foreground=COLORS["text"],
+            rowheight=34,
+            borderwidth=0,
+            font=("Segoe UI", 9),
+        )
+        style.configure(
+            "Demo.Treeview.Heading",
+            background=COLORS["surface_alt"],
+            foreground=COLORS["muted"],
+            borderwidth=0,
+            font=("Segoe UI", 8, "bold"),
+        )
+        style.map("Demo.Treeview", background=[("selected", COLORS["accent_dark"])])
 
     def _build_shell(self) -> None:
         shell = ttk.Frame(self, style="App.TFrame")
@@ -212,6 +236,18 @@ class FantasyManagerApp(tk.Tk):
         view = VIEW_BY_KEY[key]
         if key == "home":
             self._render_home(view)
+        elif key == "draft":
+            self._render_draft(view)
+        elif key == "lineup":
+            self._render_lineup(view)
+        elif key == "waivers":
+            self._render_waivers(view)
+        elif key == "trades":
+            self._render_trades(view)
+        elif key == "models":
+            self._render_models(view)
+        elif key == "settings":
+            self._render_settings(view)
         else:
             self._render_placeholder(view)
 
@@ -444,6 +480,294 @@ class FantasyManagerApp(tk.Tk):
         tk.Label(
             card, text=detail, bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI", 9)
         ).pack(anchor="w", padx=18, pady=(5, 17))
+
+    def _create_demo_banner(self, parent: tk.Frame, text: str) -> None:
+        banner = tk.Frame(parent, bg="#302a17")
+        banner.pack(fill="x", pady=(0, 16))
+        tk.Label(
+            banner,
+            text=f"DEMO PREVIEW  ·  {text}",
+            bg="#302a17",
+            fg=COLORS["warning"],
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=16, pady=10)
+
+    def _create_kpi_cards(self, parent: tk.Frame, cards: list[tuple[str, str, str]]) -> None:
+        frame = tk.Frame(parent, bg=COLORS["background"])
+        frame.pack(fill="x", pady=(0, 18))
+        frame.grid_columnconfigure(tuple(range(len(cards))), weight=1, uniform="kpis")
+        for index, (label, value, detail) in enumerate(cards):
+            self._create_card(frame, index, label, value, detail)
+
+    def _create_table(
+        self,
+        parent: tk.Frame,
+        columns: tuple[str, ...],
+        rows: list[tuple[str, ...]],
+        widths: tuple[int, ...],
+    ) -> ttk.Treeview:
+        table = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            style="Demo.Treeview",
+            height=min(max(len(rows), 4), 8),
+        )
+        for column, width in zip(columns, widths, strict=True):
+            table.heading(column, text=column.upper())
+            table.column(column, width=width, anchor="w", stretch=True)
+        for row in rows:
+            table.insert("", "end", values=row)
+        table.pack(fill="x", padx=1, pady=1)
+        return table
+
+    def _render_draft(self, view: ViewDefinition) -> None:
+        self._render_header(view)
+        body = tk.Frame(self.content, bg=COLORS["background"])
+        body.pack(fill="both", expand=True, padx=42, pady=(0, 34))
+        self._create_demo_banner(body, "Draft board is simulated; no platform draft is connected.")
+        self._create_kpi_cards(
+            body,
+            [
+                ("ON THE CLOCK", "Pick 7", "Round 4 · Snake draft"),
+                ("ROSTER NEED", "WR", "Two starting spots remain"),
+                ("TOP RECOMMENDATION", "CeeDee Lamb", "18.7 projected points"),
+            ],
+        )
+        tk.Label(
+            body,
+            text="Recommended picks",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+        rows = [
+            (
+                str(item.rank),
+                item.player,
+                item.position,
+                f"{item.projection:.1f}",
+                item.value,
+                item.reason,
+            )
+            for item in DRAFT_RECOMMENDATIONS
+        ]
+        self._create_table(
+            body,
+            ("Rank", "Player", "Pos", "Projection", "Value", "Why"),
+            rows,
+            (55, 150, 55, 95, 105, 360),
+        )
+
+    def _render_lineup(self, view: ViewDefinition) -> None:
+        self._render_header(view)
+        body = tk.Frame(self.content, bg=COLORS["background"])
+        body.pack(fill="both", expand=True, padx=42, pady=(0, 34))
+        self._create_demo_banner(
+            body, "Lineup recommendations use simulated projections and matchup context."
+        )
+        self._create_kpi_cards(
+            body,
+            [
+                ("CURRENT LINEUP", "112.8", "ESPN-style projection"),
+                ("AI RECOMMENDATION", "119.6", "+6.8 projected points"),
+                ("MATCHUP", "Favorable", "Projected win probability 62%"),
+            ],
+        )
+        tk.Label(
+            body,
+            text="Start / sit board",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+        rows = [
+            (
+                item.slot,
+                item.player,
+                item.opponent,
+                f"{item.espn_projection:.1f}",
+                f"{item.ai_projection:.1f}",
+                item.decision,
+                item.reason,
+            )
+            for item in LINEUP_DECISIONS
+        ]
+        self._create_table(
+            body,
+            ("Slot", "Player", "Opp", "ESPN", "AI", "Decision", "Reason"),
+            rows,
+            (55, 130, 75, 65, 65, 95, 330),
+        )
+
+    def _render_waivers(self, view: ViewDefinition) -> None:
+        self._render_header(view)
+        body = tk.Frame(self.content, bg=COLORS["background"])
+        body.pack(fill="both", expand=True, padx=42, pady=(0, 34))
+        self._create_demo_banner(
+            body, "Waiver alerts are simulated; add/drop actions are not submitted."
+        )
+        self._create_kpi_cards(
+            body,
+            [
+                ("AVAILABLE PLAYERS", "148", "Demo free-agent pool"),
+                ("ADD NOW", "2", "High-priority upgrades"),
+                ("WATCHLIST", "11", "Monitor for role changes"),
+            ],
+        )
+        tk.Label(
+            body,
+            text="Waiver recommendations",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+        rows = [
+            (
+                item.action,
+                item.player,
+                item.position,
+                f"{item.projection:.1f}",
+                item.confidence,
+                item.reason,
+            )
+            for item in WAIVER_TARGETS
+        ]
+        self._create_table(
+            body,
+            ("Action", "Player", "Pos", "3-Wk Proj.", "Confidence", "Reason"),
+            rows,
+            (120, 140, 55, 90, 95, 360),
+        )
+
+    def _render_trades(self, view: ViewDefinition) -> None:
+        self._render_header(view)
+        body = tk.Frame(self.content, bg=COLORS["background"])
+        body.pack(fill="both", expand=True, padx=42, pady=(0, 34))
+        self._create_demo_banner(
+            body,
+            "Trade ideas are simulated and require your approval before any future submission.",
+        )
+        self._create_kpi_cards(
+            body,
+            [
+                ("TEAM NEED", "WR depth", "Highest projected gap"),
+                ("SURPLUS", "RB / TE", "Potential trade capital"),
+                ("BEST FIT", "+4.6", "Projected weekly gain"),
+            ],
+        )
+        tk.Label(
+            body,
+            text="Potential trade ideas",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+        rows = [
+            (
+                item.proposal,
+                item.send,
+                item.receive,
+                item.target_team,
+                f"+{item.weekly_delta:.1f}",
+                f"{item.fairness}/100",
+            )
+            for item in TRADE_IDEAS
+        ]
+        self._create_table(
+            body,
+            ("Type", "Send", "Receive", "Target Team", "Your Delta", "Fairness"),
+            rows,
+            (90, 150, 170, 170, 90, 90),
+        )
+
+    def _render_models(self, view: ViewDefinition) -> None:
+        self._render_header(view)
+        body = tk.Frame(self.content, bg=COLORS["background"])
+        body.pack(fill="both", expand=True, padx=42, pady=(0, 34))
+        self._create_demo_banner(
+            body, "Model metrics are illustrative until local checkpoints are connected."
+        )
+        self._create_kpi_cards(
+            body,
+            [
+                ("MODEL STATUS", "4 loaded", "Demo checkpoints"),
+                ("PROJECTION MAE", "18.7", "Illustrative points"),
+                ("TRAINING DATA", "2001–2024", "Historical seasons"),
+            ],
+        )
+        tk.Label(
+            body,
+            text="Connected services and model health",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+        rows = [(item.model, item.status, item.last_run, item.detail) for item in MODEL_STATUSES]
+        self._create_table(
+            body,
+            ("Model / Service", "Status", "Last Run", "Details"),
+            rows,
+            (200, 120, 140, 380),
+        )
+
+    def _render_settings(self, view: ViewDefinition) -> None:
+        self._render_header(view)
+        body = tk.Frame(self.content, bg=COLORS["background"])
+        body.pack(fill="both", expand=True, padx=42, pady=(0, 34))
+        self._create_demo_banner(
+            body, "These controls preview the future connection and league configuration flow."
+        )
+        tk.Label(
+            body,
+            text="Platform connections",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+        connection_panel = tk.Frame(body, bg=COLORS["surface"])
+        connection_panel.pack(fill="x", pady=(0, 22))
+        for row, platform in enumerate(("ESPN", "Sleeper", "NFL Fantasy")):
+            tk.Label(
+                connection_panel,
+                text=platform,
+                bg=COLORS["surface"],
+                fg=COLORS["text"],
+                font=("Segoe UI", 10, "bold"),
+                width=18,
+                anchor="w",
+            ).grid(row=row, column=0, padx=18, pady=12, sticky="w")
+            tk.Label(
+                connection_panel,
+                text="Not connected",
+                bg=COLORS["surface"],
+                fg=COLORS["warning"],
+                font=("Segoe UI", 9),
+            ).grid(row=row, column=1, padx=18, sticky="w")
+            ttk.Button(
+                connection_panel,
+                text="Connect later",
+                style="Accent.TButton",
+            ).grid(row=row, column=2, padx=18, pady=8)
+
+        tk.Label(
+            body,
+            text="League defaults",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+        rows = [
+            ("Roster size", "16 players", "ESPN-style default"),
+            (
+                "Starting lineup",
+                "QB · 2 RB · 2 WR · TE · FLEX · K · DST",
+                "League-specific override later",
+            ),
+            ("Assistant mode", "Recommend + explain", "Human approval required"),
+            ("Risk preference", "Balanced", "Adjustable per league"),
+        ]
+        self._create_table(body, ("Setting", "Current", "Notes"), rows, (180, 350, 330))
 
     def _render_placeholder(self, view: ViewDefinition) -> None:
         self._render_header(view)
