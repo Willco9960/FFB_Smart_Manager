@@ -52,6 +52,14 @@ class ModelStatus:
     detail: str
 
 
+@dataclass(frozen=True)
+class FeedItem:
+    source: str
+    timestamp: str
+    headline: str
+    detail: str
+
+
 DRAFT_RECOMMENDATIONS = (
     DraftRecommendation(
         1, "CeeDee Lamb", "WR", 18.7, "+4.8 value", "Fills WR need before a tier drop."
@@ -180,5 +188,69 @@ MODEL_STATUSES = (
         "Demo connected",
         "Today, 9:15 AM",
         "Live connector integration is the next milestone",
+    ),
+)
+
+SEASON_WEEKS = ("W1", "W3", "W5", "W7", "W9", "W11", "W13", "W15")
+
+LEAGUE_TRENDS = (
+    ("Home League", (101, 108, 96, 119, 112, 126, 118, 132), "#5eead4"),
+    ("Work League", (92, 99, 105, 101, 110, 106, 115, 121), "#fbbf24"),
+    ("Dynasty League", (110, 116, 122, 118, 130, 127, 139, 145), "#a78bfa"),
+    ("Friends League", (88, 94, 91, 103, 97, 109, 105, 112), "#60a5fa"),
+)
+
+PROJECTED_LEAGUE_POINTS = (
+    ("Home", 121.4),
+    ("Work", 108.7),
+    ("Dynasty", 127.9),
+    ("Friends", 103.2),
+)
+
+NEWS_UPDATES = (
+    FeedItem(
+        "TEAM NEWS",
+        "8 min ago",
+        "A.J. Brown limited in practice",
+        "Monitor Friday status; matchup remains favorable if active.",
+    ),
+    FeedItem(
+        "INJURY RADAR",
+        "22 min ago",
+        "Dallas offensive line downgraded",
+        "Reduce confidence in short-yardage backs this week.",
+    ),
+    FeedItem(
+        "MATCHUP ENGINE",
+        "41 min ago",
+        "Philadelphia implied total moved up",
+        "Eagles skill players receive a small projection lift.",
+    ),
+    FeedItem(
+        "BYE WATCH",
+        "1 hr ago",
+        "Three starters enter bye next week",
+        "Waiver scan recommends adding an RB before the deadline.",
+    ),
+)
+
+SOCIAL_UPDATES = (
+    FeedItem(
+        "BEAT REPORTER",
+        "5 min ago",
+        "@GridironBeat expects a larger red-zone role",
+        "Confidence: medium · source sentiment positive.",
+    ),
+    FeedItem(
+        "FANTASY COMMUNITY",
+        "18 min ago",
+        "Analyst consensus moved Reed into WR2 range",
+        "Trend: 72% of tracked analysts moved up.",
+    ),
+    FeedItem(
+        "NEWSWIRE",
+        "33 min ago",
+        "Coach says the backfield remains a committee",
+        "Maintain a floor penalty until usage stabilizes.",
     ),
 )
