@@ -134,7 +134,11 @@ def train_modular_policy_self_play(
             best_score = averaged[0][0]
             best_policy = clone_modular_policy(averaged[0][1].policy_network)
         selected = [agent for _, agent in averaged[:selection_count]]
-        population = list(selected)
+        # Carry policy networks into the next generation.  Keeping the
+        # NeuralDraftAgent wrapper here would nest agents inside agents on the
+        # next loop, so the draft agent would eventually receive an object
+        # without score_action/score_decisions methods.
+        population = [agent.policy_network for agent in selected]
         while len(population) < population_size:
             first = rng.choice(selected)
             second = rng.choice(selected)
