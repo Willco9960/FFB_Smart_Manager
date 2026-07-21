@@ -67,6 +67,18 @@ def parse_args() -> argparse.Namespace:
         help="Run all seasons every N generations when scenario sampling is enabled.",
     )
     parser.add_argument(
+        "--anchor-scenarios-per-generation",
+        type=int,
+        default=4,
+        help="Fixed seasons included in every sampled generation for comparable fitness.",
+    )
+    parser.add_argument(
+        "--final-selection-count",
+        type=int,
+        default=3,
+        help="Top sampled-generation candidates to compare on all seasons at the end.",
+    )
+    parser.add_argument(
         "--collect-season-replay",
         action="store_true",
         help="Collect leakage-safe lineup, waiver, and trade replay records from training seasons.",
@@ -154,7 +166,10 @@ def create_generation_callback(
     checkpoint_dir: Path,
 ):
     def on_generation(metrics: ModularGenerationMetrics, best_policy) -> None:
-        checkpoint_path = checkpoint_dir / f"generation_{metrics.generation_number:03d}_best.pt"
+        checkpoint_path = checkpoint_dir / (
+            f"after_generation_{metrics.generation_number:03d}_"
+            f"best_from_generation_{metrics.cumulative_best_generation:03d}.pt"
+        )
         save_modular_policy_network(best_policy, checkpoint_path)
         generation_record = metrics.to_dict()
         generation_record["checkpoint_path"] = str(checkpoint_path)
@@ -180,6 +195,45 @@ def create_generation_callback(
     return on_generation
 
 
+def create_final_evaluation_callback(
+    report: dict,
+    report_path: Path,
+    checkpoint_dir: Path,
+):
+    def on_final_evaluation(final_report: dict, selected_policy) -> None:
+        selected_generation = final_report["selected_generation"]
+        checkpoint_path = checkpoint_dir / (
+            f"selected_full_evaluation_generation_{selected_generation:03d}.pt"
+        )
+        save_modular_policy_network(selected_policy, checkpoint_path)
+        final_report["selected_checkpoint_path"] = str(checkpoint_path)
+        report["final_evaluation"] = final_report
+        report["selected_checkpoint_path"] = str(checkpoint_path)
+        report["updated_at"] = datetime.now().astimezone().isoformat()
+        write_json(report_path, report)
+
+        selected = next(
+            candidate
+            for candidate in final_report["candidates"]
+            if candidate["generation_number"] == selected_generation
+        )
+        try:
+            print(
+                f"[Final full evaluation] selected generation={selected_generation} "
+                f"fitness={selected['full_evaluation_fitness']:.2f} "
+                f"wins={selected['wins']:.2f} "
+                f"playoffs={selected['playoff_rate']:.1%} "
+                f"championships={selected['championship_rate']:.1%}",
+                flush=True,
+            )
+        except OSError:
+            # A closed terminal/pipeline must not turn a completed training run
+            # into a failed run after the report and checkpoint were written.
+            pass
+
+    return on_final_evaluation
+
+
 def main() -> None:
     args = parse_args()
     started_at = datetime.now().astimezone()
@@ -203,6 +257,8 @@ def main() -> None:
             "rounds": args.rounds,
             "scenarios_per_generation": args.scenarios_per_generation,
             "full_evaluation_every": args.full_evaluation_every,
+            "anchor_scenarios_per_generation": args.anchor_scenarios_per_generation,
+            "final_selection_count": args.final_selection_count,
             "collect_season_replay": args.collect_season_replay,
         },
         "stages": {},
@@ -214,6 +270,7 @@ def main() -> None:
     if args.scenarios_per_generation > 0:
         print(
             f"Scenario rotation: {args.scenarios_per_generation} per generation; "
+            f"{args.anchor_scenarios_per_generation} fixed anchors; "
             f"full evaluation every {args.full_evaluation_every or 'never'} generations",
             flush=True,
         )
@@ -308,7 +365,14 @@ def main() -> None:
                 args.scenarios_per_generation if args.scenarios_per_generation > 0 else None
             ),
             full_evaluation_interval=args.full_evaluation_every,
+            anchor_scenarios_per_generation=args.anchor_scenarios_per_generation,
+            final_selection_count=args.final_selection_count,
             generation_callback=create_generation_callback(
+                report,
+                args.report,
+                args.checkpoint_dir,
+            ),
+            final_evaluation_callback=create_final_evaluation_callback(
                 report,
                 args.report,
                 args.checkpoint_dir,

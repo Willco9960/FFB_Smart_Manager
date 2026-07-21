@@ -169,6 +169,8 @@ def test_modular_generation_metrics_are_json_ready():
         mutation_strength=0.01,
         elapsed_seconds=12.5,
         cumulative_best_fitness=100.0,
+        cumulative_best_generation=1,
+        scenario_labels=("Scenario 1", "Scenario 2"),
     )
 
     payload = metrics.to_dict()
@@ -187,7 +189,7 @@ def test_scenario_rotation_is_deterministic_and_wraps():
         scenarios_per_generation=2,
     )
 
-    assert selected == [(2, []), (3, [])]
+    assert selected == [(0, []), (4, [])]
 
 
 def test_scenario_rotation_runs_full_evaluation_on_interval():

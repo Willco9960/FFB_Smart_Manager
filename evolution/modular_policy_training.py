@@ -48,12 +48,15 @@ class ModularGenerationMetrics:
     mutation_strength: float
     elapsed_seconds: float
     cumulative_best_fitness: float
+    cumulative_best_generation: int
+    scenario_labels: tuple[str, ...]
 
     def to_dict(self) -> dict[str, float | int | None]:
         return asdict(self)
 
 
 GenerationCallback = Callable[[ModularGenerationMetrics, ModularManagerPolicyNetwork], None]
+FinalEvaluationCallback = Callable[[dict, ModularManagerPolicyNetwork], None]
 
 
 def select_scenarios_for_generation(
@@ -61,6 +64,7 @@ def select_scenarios_for_generation(
     generation_number: int,
     scenarios_per_generation: int | None = None,
     full_evaluation_interval: int = 0,
+    anchor_scenarios_per_generation: int = 4,
 ) -> list[tuple[League, list[WeeklyPlayerPerformance]]]:
     """Select a deterministic rotating subset without changing the default.
 
@@ -78,11 +82,27 @@ def select_scenarios_for_generation(
     if full_evaluation_interval > 0 and generation_number % full_evaluation_interval == 0:
         return list(scenarios)
 
-    start_index = ((generation_number - 1) * scenarios_per_generation) % len(scenarios)
-    return [
-        scenarios[(start_index + offset) % len(scenarios)]
-        for offset in range(scenarios_per_generation)
+    anchor_count = min(anchor_scenarios_per_generation, scenarios_per_generation)
+    if anchor_count <= 0:
+        anchor_indices: list[int] = []
+    elif anchor_count == 1:
+        anchor_indices = [0]
+    else:
+        anchor_indices = sorted(
+            {
+                round(index * (len(scenarios) - 1) / (anchor_count - 1))
+                for index in range(anchor_count)
+            }
+        )
+
+    rotating_count = scenarios_per_generation - len(anchor_indices)
+    rotating_indices = [index for index in range(len(scenarios)) if index not in anchor_indices]
+    start_index = ((generation_number - 1) * rotating_count) % len(rotating_indices)
+    selected_indices = anchor_indices + [
+        rotating_indices[(start_index + offset) % len(rotating_indices)]
+        for offset in range(rotating_count)
     ]
+    return [scenarios[index] for index in sorted(selected_indices)]
 
 
 def clone_modular_policy(network: ModularManagerPolicyNetwork) -> ModularManagerPolicyNetwork:
@@ -141,11 +161,16 @@ def train_modular_policy_self_play(
     generation_callback: GenerationCallback | None = None,
     scenarios_per_generation: int | None = None,
     full_evaluation_interval: int = 0,
+    anchor_scenarios_per_generation: int = 4,
+    final_selection_count: int = 3,
+    final_evaluation_callback: FinalEvaluationCallback | None = None,
 ) -> tuple[ModularManagerPolicyNetwork, list[float]]:
     if population_size < selection_count or selection_count < 1:
         raise ValueError("selection_count must be between one and population_size.")
     if not scenarios:
         raise ValueError("At least one scenario is required.")
+    if final_selection_count < 1:
+        raise ValueError("final_selection_count must be at least one.")
 
     rng = random.Random(seed)
     population = [clone_modular_policy(initial_policy)]
@@ -155,6 +180,8 @@ def train_modular_policy_self_play(
     history = []
     best_policy = clone_modular_policy(initial_policy)
     best_score = float("-inf")
+    best_generation = 0
+    candidate_policies: list[tuple[int, float, ModularManagerPolicyNetwork]] = []
     training_started = perf_counter()
     for generation in range(generations):
         generation_scenarios = select_scenarios_for_generation(
@@ -162,6 +189,7 @@ def train_modular_policy_self_play(
             generation_number=generation + 1,
             scenarios_per_generation=scenarios_per_generation,
             full_evaluation_interval=full_evaluation_interval,
+            anchor_scenarios_per_generation=anchor_scenarios_per_generation,
         )
         neural_agents = [
             NeuralDraftAgent(policy_network=policy, genome=transaction_genome)
@@ -216,6 +244,15 @@ def train_modular_policy_self_play(
         if generation_best_score > best_score:
             best_score = generation_best_score
             best_policy = clone_modular_policy(best_agent.policy_network)
+            best_generation = generation + 1
+
+        candidate_policies.append(
+            (
+                generation + 1,
+                generation_best_score,
+                clone_modular_policy(best_agent.policy_network),
+            )
+        )
 
         metrics = ModularGenerationMetrics(
             generation_number=generation + 1,
@@ -251,6 +288,8 @@ def train_modular_policy_self_play(
             mutation_strength=round(mutation_strength / (generation + 1), 6),
             elapsed_seconds=round(perf_counter() - training_started, 2),
             cumulative_best_fitness=round(best_score, 2),
+            cumulative_best_generation=best_generation,
+            scenario_labels=tuple(league.name for league, _ in generation_scenarios),
         )
         if generation_callback is not None:
             generation_callback(metrics, best_policy)
@@ -268,5 +307,68 @@ def train_modular_policy_self_play(
             population.append(
                 mutate_modular_policy(child, rng, mutation_strength / (generation + 1))
             )
+
+    final_candidates = sorted(candidate_policies, key=lambda item: item[1], reverse=True)[
+        : min(final_selection_count, len(candidate_policies))
+    ]
+    final_evaluations = []
+    for candidate_index, (generation_number, training_fitness, policy) in enumerate(
+        final_candidates
+    ):
+        candidate = NeuralDraftAgent(policy_network=policy, genome=transaction_genome)
+        opponents = create_baseline_opponents(
+            opponent_count=len(scenarios[0][0].teams) - 1,
+            seed=seed + 100_000,
+        )
+        candidate_results: list[EvaluatedAgent] = []
+        for scenario_index, (league, performances) in enumerate(scenarios):
+            results = evaluate_full_season_battle_royale(
+                agents=[candidate, *opponents],
+                league=league,
+                performances=performances,
+                rounds=rounds,
+                lineup_rules=lineup_rules,
+                seed=seed + 200_000 + candidate_index * 10_000 + scenario_index,
+                transaction_genome_fallback=transaction_genome,
+            )
+            candidate_results.append(
+                next(result for result in results if result.agent is candidate)
+            )
+
+        final_evaluations.append(
+            {
+                "generation_number": generation_number,
+                "training_fitness": round(training_fitness, 2),
+                "full_evaluation_fitness": round(
+                    mean(result.fitness_score for result in candidate_results),
+                    2,
+                ),
+                "wins": round(mean(result.regular_season_wins for result in candidate_results), 2),
+                "points_for": round(mean(result.points_for for result in candidate_results), 2),
+                "playoff_rate": round(mean(result.playoff_rate for result in candidate_results), 4),
+                "championship_rate": round(
+                    mean(result.championship_rate for result in candidate_results),
+                    4,
+                ),
+                "transaction_reward": round(
+                    mean(result.transaction_reward for result in candidate_results),
+                    2,
+                ),
+            }
+        )
+
+    selected_final_index = max(
+        range(len(final_evaluations)),
+        key=lambda index: final_evaluations[index]["full_evaluation_fitness"],
+    )
+    selected_generation, _, selected_policy = final_candidates[selected_final_index]
+    best_policy = clone_modular_policy(selected_policy)
+    final_report = {
+        "selected_generation": selected_generation,
+        "candidates": final_evaluations,
+        "evaluation_scenario_count": len(scenarios),
+    }
+    if final_evaluation_callback is not None:
+        final_evaluation_callback(final_report, best_policy)
 
     return best_policy, history
