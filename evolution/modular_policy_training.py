@@ -7,6 +7,10 @@ trying to learn player projections from championship rewards alone.
 
 import copy
 import random
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from statistics import mean, median, pstdev
+from time import perf_counter
 
 import torch
 
@@ -19,6 +23,66 @@ from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from models.modular_manager_policy import ModularManagerPolicyNetwork
+
+
+@dataclass(frozen=True)
+class ModularGenerationMetrics:
+    """Inspectable metrics emitted after each self-play generation."""
+
+    generation_number: int
+    generation_count: int
+    scenario_count: int
+    neural_population: int
+    baseline_population: int
+    best_fitness: float
+    average_fitness: float
+    median_fitness: float
+    fitness_stddev: float
+    best_wins: float
+    best_points_for: float
+    best_playoff_rate: float
+    best_championship_rate: float
+    best_transaction_reward: float
+    baseline_average_fitness: float | None
+    baseline_best_fitness: float | None
+    mutation_strength: float
+    elapsed_seconds: float
+    cumulative_best_fitness: float
+
+    def to_dict(self) -> dict[str, float | int | None]:
+        return asdict(self)
+
+
+GenerationCallback = Callable[[ModularGenerationMetrics, ModularManagerPolicyNetwork], None]
+
+
+def select_scenarios_for_generation(
+    scenarios: list[tuple[League, list[WeeklyPlayerPerformance]]],
+    generation_number: int,
+    scenarios_per_generation: int | None = None,
+    full_evaluation_interval: int = 0,
+) -> list[tuple[League, list[WeeklyPlayerPerformance]]]:
+    """Select a deterministic rotating subset without changing the default.
+
+    A full evaluation is retained whenever the requested interval is reached.
+    This lets long runs spend most generations exploring quickly while still
+    checking the entire historical library periodically.
+    """
+
+    if not scenarios:
+        return []
+    if scenarios_per_generation is None or scenarios_per_generation <= 0:
+        return list(scenarios)
+    if scenarios_per_generation >= len(scenarios):
+        return list(scenarios)
+    if full_evaluation_interval > 0 and generation_number % full_evaluation_interval == 0:
+        return list(scenarios)
+
+    start_index = ((generation_number - 1) * scenarios_per_generation) % len(scenarios)
+    return [
+        scenarios[(start_index + offset) % len(scenarios)]
+        for offset in range(scenarios_per_generation)
+    ]
 
 
 def clone_modular_policy(network: ModularManagerPolicyNetwork) -> ModularManagerPolicyNetwork:
@@ -74,6 +138,9 @@ def train_modular_policy_self_play(
     rounds: int = 16,
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES,
     include_baseline_opponents: bool = True,
+    generation_callback: GenerationCallback | None = None,
+    scenarios_per_generation: int | None = None,
+    full_evaluation_interval: int = 0,
 ) -> tuple[ModularManagerPolicyNetwork, list[float]]:
     if population_size < selection_count or selection_count < 1:
         raise ValueError("selection_count must be between one and population_size.")
@@ -88,7 +155,14 @@ def train_modular_policy_self_play(
     history = []
     best_policy = clone_modular_policy(initial_policy)
     best_score = float("-inf")
+    training_started = perf_counter()
     for generation in range(generations):
+        generation_scenarios = select_scenarios_for_generation(
+            scenarios=scenarios,
+            generation_number=generation + 1,
+            scenarios_per_generation=scenarios_per_generation,
+            full_evaluation_interval=full_evaluation_interval,
+        )
         neural_agents = [
             NeuralDraftAgent(policy_network=policy, genome=transaction_genome)
             for policy in population
@@ -104,7 +178,7 @@ def train_modular_policy_self_play(
                 )
             )
         results: list[EvaluatedAgent] = []
-        for scenario_index, (league, performances) in enumerate(scenarios):
+        for scenario_index, (league, performances) in enumerate(generation_scenarios):
             results.extend(
                 evaluate_full_season_battle_royale(
                     agents=agents,
@@ -129,10 +203,58 @@ def train_modular_policy_self_play(
             average = sum(result.fitness_score for result in agent_results) / len(agent_results)
             averaged.append((average, agent))
         averaged.sort(key=lambda item: item[0], reverse=True)
-        history.append(round(averaged[0][0], 2))
-        if averaged[0][0] > best_score:
-            best_score = averaged[0][0]
-            best_policy = clone_modular_policy(averaged[0][1].policy_network)
+        generation_best_score = averaged[0][0]
+        neural_scores = [score for score, _ in averaged]
+        neural_agent_ids = {id(agent) for agent in neural_agents}
+        baseline_results = [
+            result for result in results if id(result.agent) not in neural_agent_ids
+        ]
+        best_agent = averaged[0][1]
+        best_agent_results = results_by_agent[id(best_agent)]
+
+        history.append(round(generation_best_score, 2))
+        if generation_best_score > best_score:
+            best_score = generation_best_score
+            best_policy = clone_modular_policy(best_agent.policy_network)
+
+        metrics = ModularGenerationMetrics(
+            generation_number=generation + 1,
+            generation_count=generations,
+            scenario_count=len(generation_scenarios),
+            neural_population=len(neural_agents),
+            baseline_population=len(agents) - len(neural_agents),
+            best_fitness=round(generation_best_score, 2),
+            average_fitness=round(mean(neural_scores), 2),
+            median_fitness=round(median(neural_scores), 2),
+            fitness_stddev=round(pstdev(neural_scores), 2) if len(neural_scores) > 1 else 0.0,
+            best_wins=round(mean(result.regular_season_wins for result in best_agent_results), 2),
+            best_points_for=round(mean(result.points_for for result in best_agent_results), 2),
+            best_playoff_rate=round(mean(result.playoff_rate for result in best_agent_results), 4),
+            best_championship_rate=round(
+                mean(result.championship_rate for result in best_agent_results),
+                4,
+            ),
+            best_transaction_reward=round(
+                mean(result.transaction_reward for result in best_agent_results),
+                2,
+            ),
+            baseline_average_fitness=(
+                round(mean(result.fitness_score for result in baseline_results), 2)
+                if baseline_results
+                else None
+            ),
+            baseline_best_fitness=(
+                round(max(result.fitness_score for result in baseline_results), 2)
+                if baseline_results
+                else None
+            ),
+            mutation_strength=round(mutation_strength / (generation + 1), 6),
+            elapsed_seconds=round(perf_counter() - training_started, 2),
+            cumulative_best_fitness=round(best_score, 2),
+        )
+        if generation_callback is not None:
+            generation_callback(metrics, best_policy)
+
         selected = [agent for _, agent in averaged[:selection_count]]
         # Carry policy networks into the next generation.  Keeping the
         # NeuralDraftAgent wrapper here would nest agents inside agents on the

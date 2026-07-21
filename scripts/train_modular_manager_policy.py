@@ -1,7 +1,11 @@
 """Warm-start and self-play train the modular manager policy."""
 
 import argparse
+import json
+import traceback
+from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 
 from agents.genome_draft_agent import GenomeDraftAgent
 from agents.trade_agent import GenomeTradeAgent
@@ -11,7 +15,10 @@ from evolution.modular_behavior_cloning import (
     ModularImitationExample,
     train_modular_behavior_policy,
 )
-from evolution.modular_policy_training import train_modular_policy_self_play
+from evolution.modular_policy_training import (
+    ModularGenerationMetrics,
+    train_modular_policy_self_play,
+)
 from evolution.offline_replay import (
     DecisionReplayBuffer,
     DecisionReplayRecord,
@@ -31,6 +38,8 @@ from models.modular_manager_policy import (
 )
 
 OUTPUT_PATH = Path("data/models/modular_manager_policy.pt")
+REPORT_PATH = Path("reports/modular_training_report.json")
+CHECKPOINT_DIR = Path("data/models/modular_policy_checkpoints")
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,12 +51,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selection", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--offline-epochs", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--mutation-strength", type=float, default=0.01)
+    parser.add_argument("--rounds", type=int, default=16)
+    parser.add_argument(
+        "--scenarios-per-generation",
+        type=int,
+        default=0,
+        help="Optional rotating historical subset; 0 evaluates every season each generation.",
+    )
+    parser.add_argument(
+        "--full-evaluation-every",
+        type=int,
+        default=0,
+        help="Run all seasons every N generations when scenario sampling is enabled.",
+    )
     parser.add_argument(
         "--collect-season-replay",
         action="store_true",
         help="Collect leakage-safe lineup, waiver, and trade replay records from training seasons.",
     )
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
+    parser.add_argument("--report", type=Path, default=REPORT_PATH)
+    parser.add_argument("--checkpoint-dir", type=Path, default=CHECKPOINT_DIR)
     return parser.parse_args()
 
 
@@ -104,14 +130,8 @@ def collect_season_replay(
         draft_agent = GenomeDraftAgent(genome)
         team_agents = {team.name: draft_agent for team in league.teams}
         run_snake_draft(league, rounds=16, team_agents=team_agents)
-        waiver_agents = {
-            team.name: GenomeWaiverAgent(genome=genome)
-            for team in league.teams
-        }
-        trade_agents = {
-            team.name: GenomeTradeAgent(genome=genome)
-            for team in league.teams
-        }
+        waiver_agents = {team.name: GenomeWaiverAgent(genome=genome) for team in league.teams}
+        trade_agents = {team.name: GenomeTradeAgent(genome=genome) for team in league.teams}
         result = run_historical_regular_season(
             league=league,
             performances=load_weekly_performances(season, include_special_teams=True),
@@ -123,64 +143,204 @@ def collect_season_replay(
     return replay_buffer
 
 
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def create_generation_callback(
+    report: dict,
+    report_path: Path,
+    checkpoint_dir: Path,
+):
+    def on_generation(metrics: ModularGenerationMetrics, best_policy) -> None:
+        checkpoint_path = checkpoint_dir / f"generation_{metrics.generation_number:03d}_best.pt"
+        save_modular_policy_network(best_policy, checkpoint_path)
+        generation_record = metrics.to_dict()
+        generation_record["checkpoint_path"] = str(checkpoint_path)
+        report["generations"].append(generation_record)
+        report["best_checkpoint_path"] = str(checkpoint_path)
+        report["updated_at"] = datetime.now().astimezone().isoformat()
+        write_json(report_path, report)
+
+        print(
+            f"[Generation {metrics.generation_number}/{metrics.generation_count}] "
+            f"best={metrics.best_fitness:.2f} "
+            f"avg={metrics.average_fitness:.2f} "
+            f"median={metrics.median_fitness:.2f} "
+            f"std={metrics.fitness_stddev:.2f} "
+            f"wins={metrics.best_wins:.2f} "
+            f"playoffs={metrics.best_playoff_rate:.1%} "
+            f"championships={metrics.best_championship_rate:.1%} "
+            f"baseline_avg={metrics.baseline_average_fitness} "
+            f"elapsed={metrics.elapsed_seconds / 3600:.2f}h",
+            flush=True,
+        )
+
+    return on_generation
+
+
 def main() -> None:
     args = parse_args()
-    model = ModularManagerPolicyNetwork()
-    teacher = GenomeDraftAgent(create_random_genome(seed=2021))
-    first_league = create_training_league(args.start_season)
-    examples = collect_draft_examples(first_league, teacher)
-    imitation_loss = train_modular_behavior_policy(model, examples, epochs=args.epochs)
-    replay_buffer = DecisionReplayBuffer(
-        [
-            DecisionReplayRecord(
-                season=args.start_season,
-                week=0,
-                decision_type="draft",
-                action_key=str(index),
-                features=example.features,
-                reward=example.target_score,
-                source="historical_teacher",
-            )
-            for index, example in enumerate(examples)
-        ]
-    )
-    if args.collect_season_replay:
-        replay_buffer.extend(
-            collect_season_replay(
-                list(range(args.start_season, args.end_season + 1)),
-                teacher.genome,
-            ).records
+    started_at = datetime.now().astimezone()
+    run_started = perf_counter()
+    seasons = list(range(args.start_season, args.end_season + 1))
+    report = {
+        "status": "running",
+        "started_at": started_at.isoformat(),
+        "updated_at": started_at.isoformat(),
+        "configuration": {
+            "start_season": args.start_season,
+            "end_season": args.end_season,
+            "seasons": seasons,
+            "population": args.population,
+            "generations": args.generations,
+            "selection": args.selection,
+            "epochs": args.epochs,
+            "offline_epochs": args.offline_epochs,
+            "seed": args.seed,
+            "mutation_strength": args.mutation_strength,
+            "rounds": args.rounds,
+            "scenarios_per_generation": args.scenarios_per_generation,
+            "full_evaluation_every": args.full_evaluation_every,
+            "collect_season_replay": args.collect_season_replay,
+        },
+        "stages": {},
+        "generations": [],
+    }
+    write_json(args.report, report)
+    print(f"Training started: {started_at.isoformat()}", flush=True)
+    print(f"Seasons: {args.start_season}-{args.end_season} ({len(seasons)} scenarios)", flush=True)
+    if args.scenarios_per_generation > 0:
+        print(
+            f"Scenario rotation: {args.scenarios_per_generation} per generation; "
+            f"full evaluation every {args.full_evaluation_every or 'never'} generations",
+            flush=True,
         )
-    offline_loss = train_offline_policy(
-        model,
-        replay_buffer,
-        epochs=args.offline_epochs,
-    )
+    print(f"Report: {args.report}", flush=True)
 
-    scenarios = [
-        (
-            create_training_league(season),
-            load_weekly_performances(season, include_special_teams=True),
+    try:
+        model = ModularManagerPolicyNetwork()
+        teacher = GenomeDraftAgent(create_random_genome(seed=2021))
+
+        stage_started = perf_counter()
+        print("[Stage 1/4] Collecting behavioral draft examples...", flush=True)
+        first_league = create_training_league(args.start_season)
+        examples = collect_draft_examples(first_league, teacher)
+        imitation_loss = train_modular_behavior_policy(model, examples, epochs=args.epochs)
+        report["stages"]["behavior_cloning"] = {
+            "examples": len(examples),
+            "loss": imitation_loss,
+            "elapsed_seconds": round(perf_counter() - stage_started, 2),
+        }
+        write_json(args.report, report)
+        print(
+            f"[Stage 1/4 complete] examples={len(examples)} "
+            f"loss={imitation_loss:.6f} "
+            f"elapsed={(perf_counter() - stage_started) / 60:.1f}m",
+            flush=True,
         )
-        for season in range(args.start_season, args.end_season + 1)
-    ]
-    trained_model, history = train_modular_policy_self_play(
-        initial_policy=model,
-        scenarios=scenarios,
-        transaction_genome=teacher.genome,
-        population_size=args.population,
-        generations=args.generations,
-        selection_count=args.selection,
-        lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,
-    )
-    model_path = save_modular_policy_network(trained_model, args.output)
-    print("Modular manager policy training complete")
-    print(f"Behavioral examples: {len(examples)}")
-    print(f"Behavioral cloning loss: {imitation_loss:.6f}")
-    print(f"Offline replay records: {len(replay_buffer)}")
-    print(f"Offline replay loss: {offline_loss:.6f}")
-    print(f"Self-play best fitness by generation: {history}")
-    print(f"Policy saved to: {model_path}")
+
+        replay_buffer = DecisionReplayBuffer(
+            [
+                DecisionReplayRecord(
+                    season=args.start_season,
+                    week=0,
+                    decision_type="draft",
+                    action_key=str(index),
+                    features=example.features,
+                    reward=example.target_score,
+                    source="historical_teacher",
+                )
+                for index, example in enumerate(examples)
+            ]
+        )
+        stage_started = perf_counter()
+        print("[Stage 2/4] Collecting historical replay...", flush=True)
+        if args.collect_season_replay:
+            replay_buffer.extend(collect_season_replay(seasons, teacher.genome).records)
+        report["stages"]["replay_collection"] = {
+            "records": len(replay_buffer),
+            "elapsed_seconds": round(perf_counter() - stage_started, 2),
+        }
+        write_json(args.report, report)
+        print(
+            f"[Stage 2/4 complete] records={len(replay_buffer)} "
+            f"elapsed={(perf_counter() - stage_started) / 60:.1f}m",
+            flush=True,
+        )
+
+        stage_started = perf_counter()
+        print("[Stage 3/4] Offline replay training...", flush=True)
+        offline_loss = train_offline_policy(model, replay_buffer, epochs=args.offline_epochs)
+        report["stages"]["offline_training"] = {
+            "loss": offline_loss,
+            "elapsed_seconds": round(perf_counter() - stage_started, 2),
+        }
+        write_json(args.report, report)
+        print(
+            f"[Stage 3/4 complete] loss={offline_loss:.6f} "
+            f"elapsed={(perf_counter() - stage_started) / 60:.1f}m",
+            flush=True,
+        )
+
+        stage_started = perf_counter()
+        print("[Stage 4/4] Self-play evolution starting...", flush=True)
+        scenarios = [
+            (
+                create_training_league(season),
+                load_weekly_performances(season, include_special_teams=True),
+            )
+            for season in seasons
+        ]
+        trained_model, history = train_modular_policy_self_play(
+            initial_policy=model,
+            scenarios=scenarios,
+            transaction_genome=teacher.genome,
+            population_size=args.population,
+            generations=args.generations,
+            selection_count=args.selection,
+            mutation_strength=args.mutation_strength,
+            seed=args.seed,
+            rounds=args.rounds,
+            lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,
+            scenarios_per_generation=(
+                args.scenarios_per_generation if args.scenarios_per_generation > 0 else None
+            ),
+            full_evaluation_interval=args.full_evaluation_every,
+            generation_callback=create_generation_callback(
+                report,
+                args.report,
+                args.checkpoint_dir,
+            ),
+        )
+        report["stages"]["self_play"] = {
+            "history": history,
+            "elapsed_seconds": round(perf_counter() - stage_started, 2),
+        }
+        model_path = save_modular_policy_network(trained_model, args.output)
+        report["status"] = "completed"
+        report["finished_at"] = datetime.now().astimezone().isoformat()
+        report["elapsed_seconds"] = round(perf_counter() - run_started, 2)
+        report["model_path"] = str(model_path)
+        report["updated_at"] = report["finished_at"]
+        write_json(args.report, report)
+        print(
+            f"[Stage 4/4 complete] elapsed={(perf_counter() - stage_started) / 3600:.2f}h",
+            flush=True,
+        )
+        print("Modular manager policy training complete", flush=True)
+        print(f"Policy saved to: {model_path}", flush=True)
+        print(f"Structured report saved to: {args.report}", flush=True)
+    except Exception as error:
+        report["status"] = "failed"
+        report["finished_at"] = datetime.now().astimezone().isoformat()
+        report["elapsed_seconds"] = round(perf_counter() - run_started, 2)
+        report["error"] = repr(error)
+        report["traceback"] = traceback.format_exc()
+        report["updated_at"] = report["finished_at"]
+        write_json(args.report, report)
+        raise
 
 
 if __name__ == "__main__":

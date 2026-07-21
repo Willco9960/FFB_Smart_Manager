@@ -9,8 +9,10 @@ from evolution.modular_behavior_cloning import (
     train_modular_behavior_policy,
 )
 from evolution.modular_policy_training import (
+    ModularGenerationMetrics,
     crossover_modular_policies,
     mutate_modular_policy,
+    select_scenarios_for_generation,
 )
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES
 from fantasy_engine.player import Player
@@ -138,12 +140,64 @@ def test_modular_policy_batch_scores_match_scalar_scores():
         create_player("RB1", "RB", 18.0),
         create_player("WR1", "WR", 17.0),
     ]
-    features = [
-        create_modular_policy_features(player, team, players)
-        for player in players
-    ]
+    features = [create_modular_policy_features(player, team, players) for player in players]
 
     batch_scores = model.score_decisions(features, "draft")
     scalar_scores = [model.score_draft_action(item) for item in features]
 
     assert batch_scores == pytest.approx(scalar_scores)
+
+
+def test_modular_generation_metrics_are_json_ready():
+    metrics = ModularGenerationMetrics(
+        generation_number=1,
+        generation_count=3,
+        scenario_count=2,
+        neural_population=10,
+        baseline_population=10,
+        best_fitness=100.0,
+        average_fitness=80.0,
+        median_fitness=82.0,
+        fitness_stddev=5.0,
+        best_wins=8.0,
+        best_points_for=1000.0,
+        best_playoff_rate=1.0,
+        best_championship_rate=0.5,
+        best_transaction_reward=2.0,
+        baseline_average_fitness=90.0,
+        baseline_best_fitness=120.0,
+        mutation_strength=0.01,
+        elapsed_seconds=12.5,
+        cumulative_best_fitness=100.0,
+    )
+
+    payload = metrics.to_dict()
+
+    assert payload["generation_number"] == 1
+    assert payload["best_playoff_rate"] == 1.0
+    assert payload["baseline_best_fitness"] == 120.0
+
+
+def test_scenario_rotation_is_deterministic_and_wraps():
+    scenarios = [(index, []) for index in range(5)]
+
+    selected = select_scenarios_for_generation(
+        scenarios=scenarios,
+        generation_number=2,
+        scenarios_per_generation=2,
+    )
+
+    assert selected == [(2, []), (3, [])]
+
+
+def test_scenario_rotation_runs_full_evaluation_on_interval():
+    scenarios = [(index, []) for index in range(5)]
+
+    selected = select_scenarios_for_generation(
+        scenarios=scenarios,
+        generation_number=4,
+        scenarios_per_generation=2,
+        full_evaluation_interval=4,
+    )
+
+    assert selected == scenarios
