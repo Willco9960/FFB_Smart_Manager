@@ -53,6 +53,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--offline-epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--mutation-strength", type=float, default=0.01)
+    parser.add_argument(
+        "--final-mutation-strength",
+        type=float,
+        default=None,
+        help="Mutation strength at the final generation; defaults to 25%% of the initial strength.",
+    )
+    parser.add_argument(
+        "--risk-penalty",
+        type=float,
+        default=0.10,
+        help="Penalty applied to cross-season fitness volatility during selection.",
+    )
+    parser.add_argument(
+        "--elite-count",
+        type=int,
+        default=1,
+        help="Number of globally best policies preserved into each next generation.",
+    )
     parser.add_argument("--rounds", type=int, default=16)
     parser.add_argument(
         "--scenarios-per-generation",
@@ -254,6 +272,9 @@ def main() -> None:
             "offline_epochs": args.offline_epochs,
             "seed": args.seed,
             "mutation_strength": args.mutation_strength,
+            "final_mutation_strength": args.final_mutation_strength,
+            "risk_penalty": args.risk_penalty,
+            "elite_count": args.elite_count,
             "rounds": args.rounds,
             "scenarios_per_generation": args.scenarios_per_generation,
             "full_evaluation_every": args.full_evaluation_every,
@@ -358,6 +379,9 @@ def main() -> None:
             generations=args.generations,
             selection_count=args.selection,
             mutation_strength=args.mutation_strength,
+            final_mutation_strength=args.final_mutation_strength,
+            risk_penalty=args.risk_penalty,
+            elite_count=args.elite_count,
             seed=args.seed,
             rounds=args.rounds,
             lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,

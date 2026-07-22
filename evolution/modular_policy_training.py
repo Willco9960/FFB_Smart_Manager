@@ -50,6 +50,7 @@ class ModularGenerationMetrics:
     cumulative_best_fitness: float
     cumulative_best_generation: int
     scenario_labels: tuple[str, ...]
+    best_risk_adjusted_fitness: float | None = None
 
     def to_dict(self) -> dict[str, float | int | None]:
         return asdict(self)
@@ -125,8 +126,45 @@ def mutate_modular_policy(
     generator.manual_seed(rng.randrange(0, 2**63 - 1))
     with torch.no_grad():
         for parameter in mutated.parameters():
-            parameter.add_(torch.randn(parameter.shape, generator=generator) * mutation_strength)
+            parameter_scale = max(float(parameter.detach().std(unbiased=False).item()), 0.01)
+            parameter.add_(
+                torch.randn(parameter.shape, generator=generator)
+                * mutation_strength
+                * parameter_scale
+            )
     return mutated
+
+
+def calculate_generation_mutation_strength(
+    generation_number: int,
+    generation_count: int,
+    initial_mutation_strength: float,
+    final_mutation_strength: float,
+) -> float:
+    """Linearly anneal mutation while retaining a useful exploration floor."""
+
+    if generation_count <= 1:
+        return round(final_mutation_strength, 6)
+
+    progress = (generation_number - 1) / (generation_count - 1)
+    return round(
+        initial_mutation_strength
+        + (final_mutation_strength - initial_mutation_strength) * progress,
+        6,
+    )
+
+
+def calculate_risk_adjusted_fitness(
+    scores: list[float],
+    risk_penalty: float,
+) -> float:
+    """Prefer policies that score well without relying on one lucky season."""
+
+    if not scores:
+        raise ValueError("At least one score is required.")
+
+    spread = pstdev(scores) if len(scores) > 1 else 0.0
+    return mean(scores) - (risk_penalty * spread)
 
 
 def crossover_modular_policies(
@@ -163,6 +201,9 @@ def train_modular_policy_self_play(
     full_evaluation_interval: int = 0,
     anchor_scenarios_per_generation: int = 4,
     final_selection_count: int = 3,
+    risk_penalty: float = 0.10,
+    final_mutation_strength: float | None = None,
+    elite_count: int = 1,
     final_evaluation_callback: FinalEvaluationCallback | None = None,
 ) -> tuple[ModularManagerPolicyNetwork, list[float]]:
     if population_size < selection_count or selection_count < 1:
@@ -171,6 +212,12 @@ def train_modular_policy_self_play(
         raise ValueError("At least one scenario is required.")
     if final_selection_count < 1:
         raise ValueError("final_selection_count must be at least one.")
+    if risk_penalty < 0.0:
+        raise ValueError("risk_penalty cannot be negative.")
+    if elite_count < 0 or elite_count > population_size:
+        raise ValueError("elite_count must be between zero and population_size.")
+    if final_mutation_strength is None:
+        final_mutation_strength = mutation_strength * 0.25
 
     rng = random.Random(seed)
     population = [clone_modular_policy(initial_policy)]
@@ -180,8 +227,9 @@ def train_modular_policy_self_play(
     history = []
     best_policy = clone_modular_policy(initial_policy)
     best_score = float("-inf")
+    best_risk_adjusted_score = float("-inf")
     best_generation = 0
-    candidate_policies: list[tuple[int, float, ModularManagerPolicyNetwork]] = []
+    candidate_policies: list[tuple[int, float, float, ModularManagerPolicyNetwork]] = []
     training_started = perf_counter()
     for generation in range(generations):
         generation_scenarios = select_scenarios_for_generation(
@@ -228,20 +276,26 @@ def train_modular_policy_self_play(
         averaged = []
         for agent in neural_agents:
             agent_results = results_by_agent[id(agent)]
-            average = sum(result.fitness_score for result in agent_results) / len(agent_results)
-            averaged.append((average, agent))
-        averaged.sort(key=lambda item: item[0], reverse=True)
-        generation_best_score = averaged[0][0]
-        neural_scores = [score for score, _ in averaged]
+            scores = [result.fitness_score for result in agent_results]
+            average = mean(scores)
+            risk_adjusted = calculate_risk_adjusted_fitness(scores, risk_penalty)
+            averaged.append(
+                (risk_adjusted, average, pstdev(scores) if len(scores) > 1 else 0.0, agent)
+            )
+        averaged.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        generation_best_risk_adjusted = averaged[0][0]
+        generation_best_score = averaged[0][1]
+        neural_scores = [average for _, average, _, _ in averaged]
         neural_agent_ids = {id(agent) for agent in neural_agents}
         baseline_results = [
             result for result in results if id(result.agent) not in neural_agent_ids
         ]
-        best_agent = averaged[0][1]
+        best_agent = averaged[0][3]
         best_agent_results = results_by_agent[id(best_agent)]
 
         history.append(round(generation_best_score, 2))
-        if generation_best_score > best_score:
+        if generation_best_risk_adjusted > best_risk_adjusted_score:
+            best_risk_adjusted_score = generation_best_risk_adjusted
             best_score = generation_best_score
             best_policy = clone_modular_policy(best_agent.policy_network)
             best_generation = generation + 1
@@ -250,10 +304,17 @@ def train_modular_policy_self_play(
             (
                 generation + 1,
                 generation_best_score,
+                generation_best_risk_adjusted,
                 clone_modular_policy(best_agent.policy_network),
             )
         )
 
+        current_mutation_strength = calculate_generation_mutation_strength(
+            generation_number=generation + 1,
+            generation_count=generations,
+            initial_mutation_strength=mutation_strength,
+            final_mutation_strength=final_mutation_strength,
+        )
         metrics = ModularGenerationMetrics(
             generation_number=generation + 1,
             generation_count=generations,
@@ -285,36 +346,45 @@ def train_modular_policy_self_play(
                 if baseline_results
                 else None
             ),
-            mutation_strength=round(mutation_strength / (generation + 1), 6),
+            mutation_strength=current_mutation_strength,
             elapsed_seconds=round(perf_counter() - training_started, 2),
             cumulative_best_fitness=round(best_score, 2),
             cumulative_best_generation=best_generation,
             scenario_labels=tuple(league.name for league, _ in generation_scenarios),
+            best_risk_adjusted_fitness=round(generation_best_risk_adjusted, 2),
         )
         if generation_callback is not None:
             generation_callback(metrics, best_policy)
 
-        selected = [agent for _, agent in averaged[:selection_count]]
+        selected = [agent for _, _, _, agent in averaged[:selection_count]]
         # Carry policy networks into the next generation.  Keeping the
         # NeuralDraftAgent wrapper here would nest agents inside agents on the
         # next loop, so the draft agent would eventually receive an object
         # without score_action/score_decisions methods.
-        population = [agent.policy_network for agent in selected]
+        population = []
+        for _ in range(elite_count):
+            population.append(clone_modular_policy(best_policy))
+        population.extend(agent.policy_network for agent in selected)
+        population = population[:population_size]
+        next_mutation_strength = calculate_generation_mutation_strength(
+            generation_number=generation + 2,
+            generation_count=generations,
+            initial_mutation_strength=mutation_strength,
+            final_mutation_strength=final_mutation_strength,
+        )
         while len(population) < population_size:
             first = rng.choice(selected)
             second = rng.choice(selected)
             child = crossover_modular_policies(first.policy_network, second.policy_network, rng)
-            population.append(
-                mutate_modular_policy(child, rng, mutation_strength / (generation + 1))
-            )
+            population.append(mutate_modular_policy(child, rng, next_mutation_strength))
 
-    final_candidates = sorted(candidate_policies, key=lambda item: item[1], reverse=True)[
-        : min(final_selection_count, len(candidate_policies))
-    ]
+    final_candidates = sorted(
+        candidate_policies,
+        key=lambda item: (item[2], item[1]),
+        reverse=True,
+    )[: min(final_selection_count, len(candidate_policies))]
     final_evaluations = []
-    for candidate_index, (generation_number, training_fitness, policy) in enumerate(
-        final_candidates
-    ):
+    for generation_number, training_fitness, training_risk_adjusted, policy in final_candidates:
         candidate = NeuralDraftAgent(policy_network=policy, genome=transaction_genome)
         opponents = create_baseline_opponents(
             opponent_count=len(scenarios[0][0].teams) - 1,
@@ -328,7 +398,10 @@ def train_modular_policy_self_play(
                 performances=performances,
                 rounds=rounds,
                 lineup_rules=lineup_rules,
-                seed=seed + 200_000 + candidate_index * 10_000 + scenario_index,
+                # Common random numbers make candidate comparisons fair: a
+                # candidate must win because of its decisions, not because it
+                # received a friendlier draft shuffle or matchup schedule.
+                seed=seed + 200_000 + scenario_index,
                 transaction_genome_fallback=transaction_genome,
             )
             candidate_results.append(
@@ -339,8 +412,13 @@ def train_modular_policy_self_play(
             {
                 "generation_number": generation_number,
                 "training_fitness": round(training_fitness, 2),
+                "training_risk_adjusted_fitness": round(training_risk_adjusted, 2),
                 "full_evaluation_fitness": round(
                     mean(result.fitness_score for result in candidate_results),
+                    2,
+                ),
+                "full_evaluation_fitness_stddev": round(
+                    pstdev(result.fitness_score for result in candidate_results),
                     2,
                 ),
                 "wins": round(mean(result.regular_season_wins for result in candidate_results), 2),
@@ -357,11 +435,21 @@ def train_modular_policy_self_play(
             }
         )
 
+    for evaluation in final_evaluations:
+        evaluation["risk_adjusted_fitness"] = round(
+            evaluation["full_evaluation_fitness"]
+            - risk_penalty * evaluation["full_evaluation_fitness_stddev"],
+            2,
+        )
+
     selected_final_index = max(
         range(len(final_evaluations)),
-        key=lambda index: final_evaluations[index]["full_evaluation_fitness"],
+        key=lambda index: (
+            final_evaluations[index]["risk_adjusted_fitness"],
+            final_evaluations[index]["full_evaluation_fitness"],
+        ),
     )
-    selected_generation, _, selected_policy = final_candidates[selected_final_index]
+    selected_generation, _, _, selected_policy = final_candidates[selected_final_index]
     best_policy = clone_modular_policy(selected_policy)
     final_report = {
         "selected_generation": selected_generation,

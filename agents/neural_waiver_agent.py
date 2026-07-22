@@ -16,7 +16,10 @@ from models.modular_manager_policy import create_modular_policy_features
 @dataclass
 class NeuralWaiverAgent:
     policy_network: ManagerPolicyNetwork
-    minimum_lineup_improvement: float = 0.5
+    # Avoid burning a waiver claim for a marginal projection change.  A small
+    # amount of abstention is valuable over a 14-week season because each
+    # transaction also changes future roster options.
+    minimum_lineup_improvement: float = 1.5
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES
 
     def choose_waiver_claim(

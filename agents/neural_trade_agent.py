@@ -16,7 +16,9 @@ from models.modular_manager_policy import create_modular_policy_features
 @dataclass
 class NeuralTradeAgent:
     policy_network: ManagerPolicyNetwork
-    minimum_lineup_improvement: float = 0.5
+    # Trades carry opportunity cost and can help the opponent, so require a
+    # meaningful projected improvement on both sides before proposing one.
+    minimum_lineup_improvement: float = 2.0
     lineup_rules: tuple[LineupSlot, ...] = ESPN_OFFENSIVE_LINEUP_RULES
 
     def choose_trade_proposal(

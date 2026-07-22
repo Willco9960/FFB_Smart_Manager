@@ -28,6 +28,12 @@ LEAGUE_STATE_FEATURE_NAMES = (
     "opponent_strength",
     "standing_win_rate",
     "playoff_probability",
+    "qb_start_need",
+    "rb_start_need",
+    "wr_start_need",
+    "te_start_need",
+    "flex_eligible_count",
+    "bench_projected_points",
 )
 
 
@@ -53,6 +59,7 @@ def create_league_state_features(
     """
 
     positions = ("QB", "RB", "WR", "TE", "K", "DST")
+    starter_requirements = {"QB": 1, "RB": 2, "WR": 2, "TE": 1}
     roster_features = [
         float(_count_position(team.roster, position)) / 8.0 for position in positions
     ]
@@ -60,6 +67,25 @@ def create_league_state_features(
         float(_count_position(available_players, position)) / max(len(available_players), 1)
         for position in positions[:4]
     ]
+    roster_counts = {
+        position: _count_position(team.roster, position) for position in starter_requirements
+    }
+    starter_needs = [
+        float(max(0, requirement - roster_counts[position])) / float(requirement)
+        for position, requirement in starter_requirements.items()
+    ]
+    flex_eligible_count = sum(player.position in ("RB", "WR", "TE") for player in team.roster)
+    starter_count = 1 + 2 + 2 + 1 + 1
+    bench_projected_points = max(
+        0.0,
+        team.projected_score()
+        - sum(
+            sorted(
+                (player.projected_score for player in team.roster),
+                reverse=True,
+            )[:starter_count]
+        ),
+    )
     return (
         float(len(team.roster)) / 16.0,
         *roster_features,
@@ -72,6 +98,9 @@ def create_league_state_features(
         float(opponent_strength) / 100.0,
         float(standing_win_rate),
         float(playoff_probability),
+        *starter_needs,
+        float(flex_eligible_count) / 16.0,
+        bench_projected_points / 500.0,
     )
 
 
