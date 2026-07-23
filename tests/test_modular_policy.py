@@ -10,6 +10,8 @@ from evolution.modular_behavior_cloning import (
 )
 from evolution.modular_policy_training import (
     ModularGenerationMetrics,
+    adapt_mutation_for_diversity,
+    calculate_policy_population_diversity,
     crossover_modular_policies,
     mutate_modular_policy,
     select_scenarios_for_generation,
@@ -72,6 +74,25 @@ def test_modular_policy_mutation_is_reproducible():
             first.parameters(), second.parameters(), strict=True
         )
     )
+
+
+def test_policy_population_diversity_is_zero_for_one_policy():
+    assert calculate_policy_population_diversity([ModularManagerPolicyNetwork()]) == 0.0
+
+
+def test_policy_population_diversity_detects_different_policies():
+    first = ModularManagerPolicyNetwork()
+    second = mutate_modular_policy(first, __import__("random").Random(7), 0.5)
+
+    assert calculate_policy_population_diversity([first, second]) > 0.0
+
+
+def test_adapt_mutation_for_diversity_boosts_collapsed_population():
+    assert adapt_mutation_for_diversity(0.01, 0.001, 0.002, 1.5) == 0.015
+
+
+def test_adapt_mutation_for_diversity_keeps_healthy_population_stable():
+    assert adapt_mutation_for_diversity(0.01, 0.01, 0.002, 1.5) == 0.01
 
 
 def test_modular_policy_crossover_preserves_shape():

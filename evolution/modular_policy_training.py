@@ -51,6 +51,7 @@ class ModularGenerationMetrics:
     cumulative_best_generation: int
     scenario_labels: tuple[str, ...]
     best_risk_adjusted_fitness: float | None = None
+    policy_population_diversity: float = 0.0
 
     def to_dict(self) -> dict[str, float | int | None]:
         return asdict(self)
@@ -126,13 +127,57 @@ def mutate_modular_policy(
     generator.manual_seed(rng.randrange(0, 2**63 - 1))
     with torch.no_grad():
         for parameter in mutated.parameters():
-            parameter_scale = max(float(parameter.detach().std(unbiased=False).item()), 0.01)
+            # A non-zero scale floor prevents the population from freezing when
+            # several generations converge to nearly identical weights.
+            parameter_scale = max(float(parameter.detach().std(unbiased=False).item()), 0.05)
             parameter.add_(
                 torch.randn(parameter.shape, generator=generator)
                 * mutation_strength
                 * parameter_scale
             )
     return mutated
+
+
+def calculate_policy_population_diversity(
+    population: list[ModularManagerPolicyNetwork],
+) -> float:
+    """Return mean normalized pairwise parameter distance for telemetry."""
+
+    if len(population) < 2:
+        return 0.0
+
+    distances = []
+    for index, first in enumerate(population):
+        first_parameters = list(first.parameters())
+        for second in population[index + 1 :]:
+            second_parameters = list(second.parameters())
+            numerator = sum(
+                float((left.detach() - right.detach()).abs().mean().item())
+                for left, right in zip(first_parameters, second_parameters, strict=True)
+            )
+            denominator = sum(
+                max(float(parameter.detach().abs().mean().item()), 0.01)
+                for parameter in first_parameters
+            )
+            distances.append(numerator / denominator)
+
+    return round(mean(distances), 6) if distances else 0.0
+
+
+def adapt_mutation_for_diversity(
+    mutation_strength: float,
+    population_diversity: float,
+    diversity_floor: float,
+    diversity_boost: float,
+) -> float:
+    """Increase exploration when the population is collapsing."""
+
+    if diversity_floor <= 0.0 or population_diversity >= diversity_floor:
+        return mutation_strength
+    if diversity_boost < 1.0:
+        raise ValueError("diversity_boost must be at least one.")
+
+    return round(mutation_strength * diversity_boost, 6)
 
 
 def calculate_generation_mutation_strength(
@@ -204,6 +249,10 @@ def train_modular_policy_self_play(
     risk_penalty: float = 0.10,
     final_mutation_strength: float | None = None,
     elite_count: int = 1,
+    draft_exploration_rate: float = 0.04,
+    draft_exploration_top_k: int = 5,
+    diversity_floor: float = 0.002,
+    diversity_mutation_boost: float = 1.5,
     final_evaluation_callback: FinalEvaluationCallback | None = None,
 ) -> tuple[ModularManagerPolicyNetwork, list[float]]:
     if population_size < selection_count or selection_count < 1:
@@ -216,6 +265,14 @@ def train_modular_policy_self_play(
         raise ValueError("risk_penalty cannot be negative.")
     if elite_count < 0 or elite_count > population_size:
         raise ValueError("elite_count must be between zero and population_size.")
+    if not 0.0 <= draft_exploration_rate <= 1.0:
+        raise ValueError("draft_exploration_rate must be between zero and one.")
+    if draft_exploration_top_k < 1:
+        raise ValueError("draft_exploration_top_k must be at least one.")
+    if diversity_floor < 0.0:
+        raise ValueError("diversity_floor cannot be negative.")
+    if diversity_mutation_boost < 1.0:
+        raise ValueError("diversity_mutation_boost must be at least one.")
     if final_mutation_strength is None:
         final_mutation_strength = mutation_strength * 0.25
 
@@ -240,8 +297,14 @@ def train_modular_policy_self_play(
             anchor_scenarios_per_generation=anchor_scenarios_per_generation,
         )
         neural_agents = [
-            NeuralDraftAgent(policy_network=policy, genome=transaction_genome)
-            for policy in population
+            NeuralDraftAgent(
+                policy_network=policy,
+                genome=transaction_genome,
+                exploration_rate=draft_exploration_rate,
+                exploration_top_k=draft_exploration_top_k,
+                random_seed=seed + generation * population_size + index,
+            )
+            for index, policy in enumerate(population)
         ]
         agents = list(neural_agents)
         if include_baseline_opponents:
@@ -292,6 +355,7 @@ def train_modular_policy_self_play(
         ]
         best_agent = averaged[0][3]
         best_agent_results = results_by_agent[id(best_agent)]
+        population_diversity = calculate_policy_population_diversity(population)
 
         history.append(round(generation_best_score, 2))
         if generation_best_risk_adjusted > best_risk_adjusted_score:
@@ -352,6 +416,7 @@ def train_modular_policy_self_play(
             cumulative_best_generation=best_generation,
             scenario_labels=tuple(league.name for league, _ in generation_scenarios),
             best_risk_adjusted_fitness=round(generation_best_risk_adjusted, 2),
+            policy_population_diversity=population_diversity,
         )
         if generation_callback is not None:
             generation_callback(metrics, best_policy)
@@ -371,6 +436,12 @@ def train_modular_policy_self_play(
             generation_count=generations,
             initial_mutation_strength=mutation_strength,
             final_mutation_strength=final_mutation_strength,
+        )
+        next_mutation_strength = adapt_mutation_for_diversity(
+            mutation_strength=next_mutation_strength,
+            population_diversity=population_diversity,
+            diversity_floor=diversity_floor,
+            diversity_boost=diversity_mutation_boost,
         )
         while len(population) < population_size:
             first = rng.choice(selected)

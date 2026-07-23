@@ -41,9 +41,7 @@ def calculate_full_season_fitness(
     champion: bool,
     transaction_reward: float,
 ) -> float:
-    fitness = (regular_season_wins * WEEKLY_WIN_REWARD) + (
-        points_for * POINTS_FOR_WEIGHT
-    )
+    fitness = (regular_season_wins * WEEKLY_WIN_REWARD) + (points_for * POINTS_FOR_WEIGHT)
 
     if playoff_seed is not None:
         fitness += PLAYOFF_QUALIFICATION_REWARD
@@ -108,6 +106,11 @@ def evaluate_full_season_battle_royale(
 
         for team, agent in zip(simulated_league.teams, agent_group, strict=True):
             team_agents[team.name] = agent
+
+        for agent_index, agent in enumerate(agent_group):
+            reset_episode = getattr(agent, "reset_episode", None)
+            if reset_episode is not None:
+                reset_episode(seed + (league_index * len(agent_group)) + agent_index)
 
         draft_picks = run_snake_draft(
             league=simulated_league,
@@ -205,9 +208,9 @@ def evaluate_full_season_battle_royale(
                     winning_draft_picks=[
                         pick for pick in draft_picks if pick.team_name == team.name
                     ],
-                regular_season_wins=standing.wins,
-                points_for=round(standing.points_for, 2),
-                playoff_seed=qualifying_playoff_seed,
+                    regular_season_wins=standing.wins,
+                    points_for=round(standing.points_for, 2),
+                    playoff_seed=qualifying_playoff_seed,
                     playoff_wins=playoff_wins,
                     champion=champion,
                     transaction_reward=transaction_reward,

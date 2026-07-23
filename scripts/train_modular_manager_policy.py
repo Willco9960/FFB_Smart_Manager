@@ -71,6 +71,33 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Number of globally best policies preserved into each next generation.",
     )
+    parser.add_argument(
+        "--draft-exploration-rate",
+        type=float,
+        default=0.04,
+        help=(
+            "Probability that a neural drafter samples among its top candidates "
+            "to preserve room diversity."
+        ),
+    )
+    parser.add_argument(
+        "--draft-exploration-top-k",
+        type=int,
+        default=5,
+        help="Candidate pool used when draft exploration triggers.",
+    )
+    parser.add_argument(
+        "--diversity-floor",
+        type=float,
+        default=0.002,
+        help="Increase mutation when normalized population diversity falls below this value.",
+    )
+    parser.add_argument(
+        "--diversity-mutation-boost",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to mutation while the population is collapsing.",
+    )
     parser.add_argument("--rounds", type=int, default=16)
     parser.add_argument(
         "--scenarios-per-generation",
@@ -206,6 +233,7 @@ def create_generation_callback(
             f"playoffs={metrics.best_playoff_rate:.1%} "
             f"championships={metrics.best_championship_rate:.1%} "
             f"baseline_avg={metrics.baseline_average_fitness} "
+            f"diversity={metrics.policy_population_diversity:.4f} "
             f"elapsed={metrics.elapsed_seconds / 3600:.2f}h",
             flush=True,
         )
@@ -275,6 +303,10 @@ def main() -> None:
             "final_mutation_strength": args.final_mutation_strength,
             "risk_penalty": args.risk_penalty,
             "elite_count": args.elite_count,
+            "draft_exploration_rate": args.draft_exploration_rate,
+            "draft_exploration_top_k": args.draft_exploration_top_k,
+            "diversity_floor": args.diversity_floor,
+            "diversity_mutation_boost": args.diversity_mutation_boost,
             "rounds": args.rounds,
             "scenarios_per_generation": args.scenarios_per_generation,
             "full_evaluation_every": args.full_evaluation_every,
@@ -382,6 +414,10 @@ def main() -> None:
             final_mutation_strength=args.final_mutation_strength,
             risk_penalty=args.risk_penalty,
             elite_count=args.elite_count,
+            draft_exploration_rate=args.draft_exploration_rate,
+            draft_exploration_top_k=args.draft_exploration_top_k,
+            diversity_floor=args.diversity_floor,
+            diversity_mutation_boost=args.diversity_mutation_boost,
             seed=args.seed,
             rounds=args.rounds,
             lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from agents.decision_scoring import bounded_policy_score
 from fantasy_engine.league import League
 from fantasy_engine.lineup import (
     ESPN_OFFENSIVE_LINEUP_RULES,
@@ -52,8 +53,8 @@ class NeuralWaiverAgent:
                 if improvement < self.minimum_lineup_improvement:
                     continue
 
-                action_score = (
-                    self._score_player(add_player, team, available_players, week) + improvement
+                action_score = improvement + bounded_policy_score(
+                    self._score_player(add_player, team, available_players, week)
                 )
 
                 if action_score > best_action_score:

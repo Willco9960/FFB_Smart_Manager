@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from agents.decision_scoring import blend_policy_and_anchor_scores
 from fantasy_engine.lineup import (
     ESPN_OFFENSIVE_LINEUP_RULES,
     LineupSlot,
@@ -27,8 +28,11 @@ class NeuralLineupAgent:
 
     def choose_lineup(self, roster: list[Player]) -> StartingLineup:
         team = Team(name="Lineup Decision", roster=roster)
+        policy_scores = [self._score_player(player, team, roster) for player in roster]
+        anchor_scores = [player.projected_score for player in roster]
+        blended_scores = blend_policy_and_anchor_scores(policy_scores, anchor_scores)
         selection_scores = {
-            id(player): self._score_player(player, team, roster) for player in roster
+            id(player): score for player, score in zip(roster, blended_scores, strict=True)
         }
 
         return build_best_starting_lineup(

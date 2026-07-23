@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from agents.decision_scoring import bounded_policy_score
 from fantasy_engine.league import League
 from fantasy_engine.lineup import (
     ESPN_OFFENSIVE_LINEUP_RULES,
@@ -72,15 +73,19 @@ class NeuralTradeAgent:
                         continue
 
                     action_score = (
-                        self._score_player(requested_player, team, team.roster, week)
-                        + self._score_player(
-                            offered_player,
-                            opposing_team,
-                            opposing_team.roster,
-                            week,
-                        )
-                        + team_improvement
+                        team_improvement
                         + opposing_improvement
+                        + bounded_policy_score(
+                            self._score_player(requested_player, team, team.roster, week)
+                        )
+                        + bounded_policy_score(
+                            self._score_player(
+                                offered_player,
+                                opposing_team,
+                                opposing_team.roster,
+                                week,
+                            )
+                        )
                     )
 
                     if action_score > best_action_score:
