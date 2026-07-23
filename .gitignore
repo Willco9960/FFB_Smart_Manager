@@ -12,3 +12,6 @@ data/processed/*.parquet
 !data/processed/.gitkeep
 data/models/*.pt
 data/models/**/*.pt
+logs/*.log
+reports/*.json
+reports/*.png
