@@ -1,12 +1,16 @@
+from evolution.offline_replay import DecisionReplayRecord
 from fantasy_engine.league import League
 from fantasy_engine.player import Player
 from fantasy_engine.team import Team
+from fantasy_engine.transactions import TransactionImpact
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_season_simulation import (
+    apply_transaction_rewards,
     format_final_standings,
     format_week_by_week_report,
     run_historical_regular_season,
 )
+from models.modular_manager_policy import create_modular_policy_features
 
 
 def create_complete_team(team_number: int) -> Team:
@@ -86,3 +90,51 @@ def test_week_by_week_report_includes_matchups_and_standing_snapshots():
     assert "Week 1 results:" in report
     assert "Team 1 7.00 vs Team 10 70.00" in report
     assert "Standings after Week 1:" in report
+
+
+def test_transaction_rewards_accumulate_into_original_decision_across_future_weeks():
+    team = Team(name="Team 1")
+    incoming = Player(name="Added", position="WR", team="ATL", projected_score=10.0)
+    outgoing = Player(name="Dropped", position="WR", team="ATL", projected_score=8.0)
+    features = create_modular_policy_features(incoming, team, [incoming])
+    records = [
+        DecisionReplayRecord(
+            season=2021,
+            week=3,
+            decision_type="waiver",
+            action_key="Added",
+            features=features,
+            reward=2.0,
+            team_name="Team 1",
+        )
+    ]
+
+    updated = apply_transaction_rewards(
+        records,
+        [
+            TransactionImpact(
+                week=3,
+                transaction_type="waiver",
+                team_name="Team 1",
+                incoming_player_names=(incoming.name,),
+                outgoing_player_names=(outgoing.name,),
+                incoming_points=12.0,
+                outgoing_points=8.0,
+                net_points=4.0,
+                reward=4.0,
+            ),
+            TransactionImpact(
+                week=4,
+                transaction_type="waiver",
+                team_name="Team 1",
+                incoming_player_names=(incoming.name,),
+                outgoing_player_names=(outgoing.name,),
+                incoming_points=15.0,
+                outgoing_points=5.0,
+                net_points=10.0,
+                reward=10.0,
+            ),
+        ],
+    )
+
+    assert updated[0].reward == 16.0

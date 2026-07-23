@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from statistics import mean, median, pstdev
 from time import perf_counter
+from typing import Literal
 
 import torch
 
@@ -253,6 +254,7 @@ def train_modular_policy_self_play(
     draft_exploration_top_k: int = 5,
     diversity_floor: float = 0.002,
     diversity_mutation_boost: float = 1.5,
+    transaction_ablation: bool = False,
     final_evaluation_callback: FinalEvaluationCallback | None = None,
 ) -> tuple[ModularManagerPolicyNetwork, list[float]]:
     if population_size < selection_count or selection_count < 1:
@@ -461,23 +463,53 @@ def train_modular_policy_self_play(
             opponent_count=len(scenarios[0][0].teams) - 1,
             seed=seed + 100_000,
         )
-        candidate_results: list[EvaluatedAgent] = []
-        for scenario_index, (league, performances) in enumerate(scenarios):
-            results = evaluate_full_season_battle_royale(
-                agents=[candidate, *opponents],
-                league=league,
-                performances=performances,
-                rounds=rounds,
-                lineup_rules=lineup_rules,
-                # Common random numbers make candidate comparisons fair: a
-                # candidate must win because of its decisions, not because it
-                # received a friendlier draft shuffle or matchup schedule.
-                seed=seed + 200_000 + scenario_index,
-                transaction_genome_fallback=transaction_genome,
-            )
-            candidate_results.append(
-                next(result for result in results if result.agent is candidate)
-            )
+
+        def evaluate_transaction_mode(
+            mode: Literal["neural", "genome", "disabled"],
+            candidate_policy=candidate,
+            opponent_agents=opponents,
+        ):
+            candidate_results: list[EvaluatedAgent] = []
+            for scenario_index, (league, performances) in enumerate(scenarios):
+                results = evaluate_full_season_battle_royale(
+                    agents=[candidate_policy, *opponent_agents],
+                    league=league,
+                    performances=performances,
+                    rounds=rounds,
+                    lineup_rules=lineup_rules,
+                    # Common random numbers make candidate comparisons fair: a
+                    # candidate must win because of its decisions, not because it
+                    # received a friendlier draft shuffle or matchup schedule.
+                    seed=seed + 200_000 + scenario_index,
+                    transaction_genome_fallback=transaction_genome,
+                    transaction_mode=mode,
+                )
+                candidate_results.append(
+                    next(result for result in results if result.agent is candidate_policy)
+                )
+            return candidate_results
+
+        candidate_results = evaluate_transaction_mode("neural")
+
+        transaction_arms = {}
+        if transaction_ablation:
+            for mode in ("genome", "disabled"):
+                arm_results = evaluate_transaction_mode(mode)
+                arm_fitness = [result.fitness_score for result in arm_results]
+                transaction_arms[mode] = {
+                    "fitness": round(mean(arm_fitness), 2),
+                    "fitness_stddev": round(pstdev(arm_fitness), 2),
+                    "wins": round(mean(result.regular_season_wins for result in arm_results), 2),
+                    "playoff_rate": round(mean(result.playoff_rate for result in arm_results), 4),
+                    "championship_rate": round(
+                        mean(result.championship_rate for result in arm_results),
+                        4,
+                    ),
+                    "transaction_reward": round(
+                        mean(result.transaction_reward for result in arm_results),
+                        2,
+                    ),
+                }
 
         final_evaluations.append(
             {
@@ -503,6 +535,7 @@ def train_modular_policy_self_play(
                     mean(result.transaction_reward for result in candidate_results),
                     2,
                 ),
+                "transaction_ablation": transaction_arms,
             }
         )
 

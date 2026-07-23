@@ -1,4 +1,5 @@
 import random
+from typing import Literal
 
 from agents.neural_draft_agent import NeuralDraftAgent
 from agents.neural_lineup_agent import NeuralLineupAgent
@@ -31,6 +32,7 @@ PLAYOFF_QUALIFICATION_REWARD = 40.0
 PLAYOFF_WIN_REWARD = 30.0
 CHAMPIONSHIP_REWARD = 150.0
 TRANSACTION_REWARD_WEIGHT = 0.25
+TRANSACTION_MODES = ("neural", "genome", "disabled")
 
 
 def calculate_full_season_fitness(
@@ -90,9 +92,12 @@ def evaluate_full_season_battle_royale(
     transaction_genome_fallback=None,
     projection_service: WeeklyNeuralProjectionService | None = None,
     season: int = 0,
+    transaction_mode: Literal["neural", "genome", "disabled"] = "neural",
 ) -> list[EvaluatedAgent]:
     if len(agents) % len(league.teams) != 0:
         raise ValueError("Population size must be divisible by the league team count.")
+    if transaction_mode not in TRANSACTION_MODES:
+        raise ValueError(f"Unknown transaction mode: {transaction_mode}")
 
     shuffled_agents = list(agents)
     random.Random(seed).shuffle(shuffled_agents)
@@ -123,7 +128,9 @@ def evaluate_full_season_battle_royale(
         lineup_agents = {}
 
         for team, agent in zip(simulated_league.teams, agent_group, strict=True):
-            if isinstance(agent, NeuralDraftAgent):
+            if transaction_mode == "disabled":
+                continue
+            if transaction_mode == "neural" and isinstance(agent, NeuralDraftAgent):
                 waiver_agents[team.name] = NeuralWaiverAgent(
                     policy_network=agent.policy_network,
                     lineup_rules=lineup_rules,

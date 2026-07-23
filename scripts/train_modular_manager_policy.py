@@ -98,6 +98,14 @@ def parse_args() -> argparse.Namespace:
         default=1.5,
         help="Multiplier applied to mutation while the population is collapsing.",
     )
+    parser.add_argument(
+        "--transaction-ablation",
+        action="store_true",
+        help=(
+            "Compare neural transactions with genome-baseline and disabled "
+            "transaction arms during final evaluation."
+        ),
+    )
     parser.add_argument("--rounds", type=int, default=16)
     parser.add_argument(
         "--scenarios-per-generation",
@@ -307,6 +315,7 @@ def main() -> None:
             "draft_exploration_top_k": args.draft_exploration_top_k,
             "diversity_floor": args.diversity_floor,
             "diversity_mutation_boost": args.diversity_mutation_boost,
+            "transaction_ablation": args.transaction_ablation,
             "rounds": args.rounds,
             "scenarios_per_generation": args.scenarios_per_generation,
             "full_evaluation_every": args.full_evaluation_every,
@@ -418,6 +427,7 @@ def main() -> None:
             draft_exploration_top_k=args.draft_exploration_top_k,
             diversity_floor=args.diversity_floor,
             diversity_mutation_boost=args.diversity_mutation_boost,
+            transaction_ablation=args.transaction_ablation,
             seed=args.seed,
             rounds=args.rounds,
             lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,

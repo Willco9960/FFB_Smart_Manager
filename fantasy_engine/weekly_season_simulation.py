@@ -79,16 +79,18 @@ def run_historical_regular_season(
             replay_records=decision_replay_records,
             season=season,
         )
-        weekly_transactions[week].extend(run_weekly_waivers(
-            league=league,
-            standings=standings,
-            performances=performances,
-            week=week,
-            waiver_agents=waiver_agents,
-            projection_service=projection_service,
-            replay_records=decision_replay_records,
-            season=season,
-        ))
+        weekly_transactions[week].extend(
+            run_weekly_waivers(
+                league=league,
+                standings=standings,
+                performances=performances,
+                week=week,
+                waiver_agents=waiver_agents,
+                projection_service=projection_service,
+                replay_records=decision_replay_records,
+                season=season,
+            )
+        )
         transaction_tracker.register(weekly_transactions[week])
         weekly_scores[week] = simulate_historical_week(
             teams=league.teams,
@@ -136,14 +138,23 @@ def apply_transaction_rewards(
     updated = list(records)
     for impact in impacts:
         incoming_key = ",".join(impact.incoming_player_names)
-        for index, record in enumerate(updated):
+        matching_indices = [
+            index
+            for index, record in enumerate(updated)
             if (
-                record.week == impact.week
+                record.week <= impact.week
                 and record.team_name == impact.team_name
                 and record.decision_type == impact.transaction_type
                 and record.action_key == incoming_key
-            ):
-                updated[index] = replace(record, reward=record.reward + impact.reward)
+            )
+        ]
+        if matching_indices:
+            # Attribute every future-week impact to the most recent matching
+            # transaction.  This avoids rewarding an older add again when a
+            # player is dropped and later reacquired.
+            index = max(matching_indices, key=lambda item: updated[item].week)
+            record = updated[index]
+            updated[index] = replace(record, reward=record.reward + impact.reward)
     return updated
 
 
@@ -316,12 +327,8 @@ def run_weekly_trades(
             continue
 
         if replay_records is not None:
-            requested_key = ",".join(
-                player.name for player in projected_proposal.requested_players
-            )
-            offered_key = ",".join(
-                player.name for player in projected_proposal.offered_players
-            )
+            requested_key = ",".join(player.name for player in projected_proposal.requested_players)
+            offered_key = ",".join(player.name for player in projected_proposal.offered_players)
             replay_records.extend(
                 [
                     DecisionReplayRecord(
@@ -346,12 +353,8 @@ def run_weekly_trades(
                         action_key=offered_key,
                         features=create_modular_policy_features(
                             projected_proposal.offered_players[0],
-                            projected_teams_by_name[
-                                projected_proposal.receiving_team_name
-                            ],
-                            projected_teams_by_name[
-                                projected_proposal.receiving_team_name
-                            ].roster,
+                            projected_teams_by_name[projected_proposal.receiving_team_name],
+                            projected_teams_by_name[projected_proposal.receiving_team_name].roster,
                             current_week=week,
                         ),
                         reward=0.0,
