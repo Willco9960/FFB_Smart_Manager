@@ -11,13 +11,16 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from statistics import mean, median, pstdev
 from time import perf_counter
-from typing import Literal
 
 import torch
 
 from agents.baseline_agents import create_baseline_opponents
 from agents.neural_draft_agent import NeuralDraftAgent
-from evolution.full_season import evaluate_full_season_battle_royale
+from evolution.full_season import (
+    TRANSACTION_MODES,
+    TransactionMode,
+    evaluate_full_season_battle_royale,
+)
 from evolution.genome import DraftStrategyGenome
 from evolution.population import EvaluatedAgent
 from fantasy_engine.league import League
@@ -255,6 +258,7 @@ def train_modular_policy_self_play(
     diversity_floor: float = 0.002,
     diversity_mutation_boost: float = 1.5,
     transaction_ablation: bool = False,
+    transaction_mode: TransactionMode = "hybrid",
     final_evaluation_callback: FinalEvaluationCallback | None = None,
 ) -> tuple[ModularManagerPolicyNetwork, list[float]]:
     if population_size < selection_count or selection_count < 1:
@@ -275,6 +279,8 @@ def train_modular_policy_self_play(
         raise ValueError("diversity_floor cannot be negative.")
     if diversity_mutation_boost < 1.0:
         raise ValueError("diversity_mutation_boost must be at least one.")
+    if transaction_mode not in TRANSACTION_MODES:
+        raise ValueError(f"Unknown transaction mode: {transaction_mode}")
     if final_mutation_strength is None:
         final_mutation_strength = mutation_strength * 0.25
 
@@ -329,6 +335,7 @@ def train_modular_policy_self_play(
                     lineup_rules=lineup_rules,
                     seed=seed + generation * 1000 + scenario_index,
                     transaction_genome_fallback=transaction_genome,
+                    transaction_mode=transaction_mode,
                 )
             )
 
@@ -465,7 +472,7 @@ def train_modular_policy_self_play(
         )
 
         def evaluate_transaction_mode(
-            mode: Literal["neural", "genome", "disabled"],
+            mode: TransactionMode,
             candidate_policy=candidate,
             opponent_agents=opponents,
         ):
@@ -489,11 +496,13 @@ def train_modular_policy_self_play(
                 )
             return candidate_results
 
-        candidate_results = evaluate_transaction_mode("neural")
+        candidate_results = evaluate_transaction_mode(transaction_mode)
 
         transaction_arms = {}
         if transaction_ablation:
-            for mode in ("genome", "disabled"):
+            for mode in TRANSACTION_MODES:
+                if mode == transaction_mode:
+                    continue
                 arm_results = evaluate_transaction_mode(mode)
                 arm_fitness = [result.fitness_score for result in arm_results]
                 transaction_arms[mode] = {
@@ -535,6 +544,7 @@ def train_modular_policy_self_play(
                     mean(result.transaction_reward for result in candidate_results),
                     2,
                 ),
+                "transaction_mode": transaction_mode,
                 "transaction_ablation": transaction_arms,
             }
         )

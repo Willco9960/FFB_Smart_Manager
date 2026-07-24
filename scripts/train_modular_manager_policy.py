@@ -106,6 +106,12 @@ def parse_args() -> argparse.Namespace:
             "transaction arms during final evaluation."
         ),
     )
+    parser.add_argument(
+        "--transaction-mode",
+        choices=("neural", "genome", "hybrid", "disabled"),
+        default="hybrid",
+        help="Transaction policy used during self-play and as the primary final-evaluation arm.",
+    )
     parser.add_argument("--rounds", type=int, default=16)
     parser.add_argument(
         "--scenarios-per-generation",
@@ -316,6 +322,7 @@ def main() -> None:
             "diversity_floor": args.diversity_floor,
             "diversity_mutation_boost": args.diversity_mutation_boost,
             "transaction_ablation": args.transaction_ablation,
+            "transaction_mode": args.transaction_mode,
             "rounds": args.rounds,
             "scenarios_per_generation": args.scenarios_per_generation,
             "full_evaluation_every": args.full_evaluation_every,
@@ -428,6 +435,7 @@ def main() -> None:
             diversity_floor=args.diversity_floor,
             diversity_mutation_boost=args.diversity_mutation_boost,
             transaction_ablation=args.transaction_ablation,
+            transaction_mode=args.transaction_mode,
             seed=args.seed,
             rounds=args.rounds,
             lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,
@@ -459,13 +467,19 @@ def main() -> None:
         report["model_path"] = str(model_path)
         report["updated_at"] = report["finished_at"]
         write_json(args.report, report)
-        print(
-            f"[Stage 4/4 complete] elapsed={(perf_counter() - stage_started) / 3600:.2f}h",
-            flush=True,
-        )
-        print("Modular manager policy training complete", flush=True)
-        print(f"Policy saved to: {model_path}", flush=True)
-        print(f"Structured report saved to: {args.report}", flush=True)
+        try:
+            print(
+                f"[Stage 4/4 complete] elapsed={(perf_counter() - stage_started) / 3600:.2f}h",
+                flush=True,
+            )
+            print("Modular manager policy training complete", flush=True)
+            print(f"Policy saved to: {model_path}", flush=True)
+            print(f"Structured report saved to: {args.report}", flush=True)
+        except OSError:
+            # The report/checkpoint are already durable.  A closed terminal or
+            # Tee pipeline must not turn a completed overnight run into a
+            # reported failure.
+            pass
     except Exception as error:
         report["status"] = "failed"
         report["finished_at"] = datetime.now().astimezone().isoformat()

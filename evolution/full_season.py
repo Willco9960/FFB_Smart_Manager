@@ -1,6 +1,7 @@
 import random
 from typing import Literal
 
+from agents.hybrid_transaction_agents import HybridTradeAgent, HybridWaiverAgent
 from agents.neural_draft_agent import NeuralDraftAgent
 from agents.neural_lineup_agent import NeuralLineupAgent
 from agents.neural_trade_agent import NeuralTradeAgent
@@ -32,7 +33,8 @@ PLAYOFF_QUALIFICATION_REWARD = 40.0
 PLAYOFF_WIN_REWARD = 30.0
 CHAMPIONSHIP_REWARD = 150.0
 TRANSACTION_REWARD_WEIGHT = 0.25
-TRANSACTION_MODES = ("neural", "genome", "disabled")
+TRANSACTION_MODES = ("neural", "genome", "hybrid", "disabled")
+TransactionMode = Literal["neural", "genome", "hybrid", "disabled"]
 
 
 def calculate_full_season_fitness(
@@ -92,7 +94,7 @@ def evaluate_full_season_battle_royale(
     transaction_genome_fallback=None,
     projection_service: WeeklyNeuralProjectionService | None = None,
     season: int = 0,
-    transaction_mode: Literal["neural", "genome", "disabled"] = "neural",
+    transaction_mode: TransactionMode = "hybrid",
 ) -> list[EvaluatedAgent]:
     if len(agents) % len(league.teams) != 0:
         raise ValueError("Population size must be divisible by the league team count.")
@@ -130,12 +132,12 @@ def evaluate_full_season_battle_royale(
         for team, agent in zip(simulated_league.teams, agent_group, strict=True):
             if transaction_mode == "disabled":
                 continue
-            if transaction_mode == "neural" and isinstance(agent, NeuralDraftAgent):
-                waiver_agents[team.name] = NeuralWaiverAgent(
+            if transaction_mode in ("neural", "hybrid") and isinstance(agent, NeuralDraftAgent):
+                neural_waiver_agent = NeuralWaiverAgent(
                     policy_network=agent.policy_network,
                     lineup_rules=lineup_rules,
                 )
-                trade_agents[team.name] = NeuralTradeAgent(
+                neural_trade_agent = NeuralTradeAgent(
                     policy_network=agent.policy_network,
                     lineup_rules=lineup_rules,
                 )
@@ -143,6 +145,26 @@ def evaluate_full_season_battle_royale(
                     policy_network=agent.policy_network,
                     lineup_rules=lineup_rules,
                 )
+                if transaction_mode == "hybrid":
+                    fallback_waiver_agent = GenomeWaiverAgent(
+                        genome=getattr(agent, "genome", None) or fallback_genome,
+                        lineup_rules=lineup_rules,
+                    )
+                    fallback_trade_agent = GenomeTradeAgent(
+                        genome=getattr(agent, "genome", None) or fallback_genome,
+                        lineup_rules=lineup_rules,
+                    )
+                    waiver_agents[team.name] = HybridWaiverAgent(
+                        neural_agent=neural_waiver_agent,
+                        fallback_agent=fallback_waiver_agent,
+                    )
+                    trade_agents[team.name] = HybridTradeAgent(
+                        neural_agent=neural_trade_agent,
+                        fallback_agent=fallback_trade_agent,
+                    )
+                else:
+                    waiver_agents[team.name] = neural_waiver_agent
+                    trade_agents[team.name] = neural_trade_agent
             else:
                 waiver_agents[team.name] = GenomeWaiverAgent(
                     genome=getattr(agent, "genome", None) or fallback_genome,
