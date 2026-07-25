@@ -83,6 +83,28 @@ report; comparisons are written under
 Transaction replay rewards include the downstream weeks after the original
 waiver or trade, so the policy is trained on the full value of a move.
 
+The hybrid transaction arm can also use a separate value/risk model trained
+from those downstream replay rewards.  It learns waiver and trade value with
+separate heads, estimates uncertainty, and applies a conservative lower-bound
+gate before allowing a neural proposal to replace the genome fallback.  This
+model is trained automatically during modular training when replay records are
+available and is saved to `data/models/transaction_value_model.pt` by default.
+Use `--transaction-value-epochs` or `--transaction-value-output` to adjust the
+training budget and checkpoint path.  The model is deliberately optional, so
+`--transaction-mode genome` and older checkpoints remain valid fallbacks.
+
+For a visible overnight run with the new stage:
+
+```powershell
+python -u -m scripts.train_modular_manager_policy --start-season 2001 --end-season 2024 --population 30 --generations 12 --selection 10 --epochs 50 --offline-epochs 50 --collect-season-replay --transaction-value-epochs 100 2>&1 | Tee-Object -FilePath logs/training_modular_transaction_value.log
+```
+
+The JSON report includes `stages.transaction_value_training` with the number
+of waiver/trade replay records, final loss, and saved model path.  Compare the
+hybrid, genome, neural, and disabled transaction arms in the final ablation;
+the new value model is an experiment, not an assumption that neural actions
+will always win.
+
 ### Optional local coach model
 
 The numerical policy and simulator remain responsible for draft, lineup,

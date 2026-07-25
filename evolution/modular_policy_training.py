@@ -27,6 +27,7 @@ from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from models.modular_manager_policy import ModularManagerPolicyNetwork
+from models.transaction_value import TransactionValueNetwork
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,7 @@ def train_modular_policy_self_play(
     diversity_mutation_boost: float = 1.5,
     transaction_ablation: bool = False,
     transaction_mode: TransactionMode = "hybrid",
+    transaction_value_model: TransactionValueNetwork | None = None,
     final_evaluation_callback: FinalEvaluationCallback | None = None,
 ) -> tuple[ModularManagerPolicyNetwork, list[float]]:
     if population_size < selection_count or selection_count < 1:
@@ -336,6 +338,7 @@ def train_modular_policy_self_play(
                     seed=seed + generation * 1000 + scenario_index,
                     transaction_genome_fallback=transaction_genome,
                     transaction_mode=transaction_mode,
+                    transaction_value_model=transaction_value_model,
                 )
             )
 
@@ -490,6 +493,7 @@ def train_modular_policy_self_play(
                     seed=seed + 200_000 + scenario_index,
                     transaction_genome_fallback=transaction_genome,
                     transaction_mode=mode,
+                    transaction_value_model=transaction_value_model,
                 )
                 candidate_results.append(
                     next(result for result in results if result.agent is candidate_policy)

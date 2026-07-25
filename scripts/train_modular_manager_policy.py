@@ -24,6 +24,7 @@ from evolution.offline_replay import (
     DecisionReplayRecord,
     train_offline_policy,
 )
+from evolution.transaction_value_training import train_transaction_value_model
 from fantasy_engine.draft import get_snake_draft_order, run_snake_draft
 from fantasy_engine.league import League
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
@@ -35,6 +36,11 @@ from models.modular_manager_policy import (
     ModularManagerPolicyNetwork,
     create_modular_policy_features,
     save_modular_policy_network,
+)
+from models.transaction_value import (
+    TRANSACTION_VALUE_PATH,
+    TransactionValueNetwork,
+    save_transaction_value_model,
 )
 
 OUTPUT_PATH = Path("data/models/modular_manager_policy.pt")
@@ -141,6 +147,17 @@ def parse_args() -> argparse.Namespace:
         "--collect-season-replay",
         action="store_true",
         help="Collect leakage-safe lineup, waiver, and trade replay records from training seasons.",
+    )
+    parser.add_argument(
+        "--transaction-value-epochs",
+        type=int,
+        default=50,
+        help="Epochs used to train the waiver/trade value-risk model from replay rewards.",
+    )
+    parser.add_argument(
+        "--transaction-value-output",
+        type=Path,
+        default=TRANSACTION_VALUE_PATH,
     )
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
     parser.add_argument("--report", type=Path, default=REPORT_PATH)
@@ -329,6 +346,8 @@ def main() -> None:
             "anchor_scenarios_per_generation": args.anchor_scenarios_per_generation,
             "final_selection_count": args.final_selection_count,
             "collect_season_replay": args.collect_season_replay,
+            "transaction_value_epochs": args.transaction_value_epochs,
+            "transaction_value_output": str(args.transaction_value_output),
         },
         "stages": {},
         "generations": [],
@@ -396,6 +415,46 @@ def main() -> None:
             flush=True,
         )
 
+        transaction_value_model = None
+        transaction_records = [
+            record
+            for record in replay_buffer.records
+            if record.decision_type in ("waiver", "trade")
+        ]
+        if transaction_records:
+            stage_started = perf_counter()
+            print("[Stage 2.5/4] Training transaction value-risk model...", flush=True)
+            transaction_value_model = TransactionValueNetwork()
+            transaction_value_loss, transaction_record_count = train_transaction_value_model(
+                model=transaction_value_model,
+                records=transaction_records,
+                epochs=args.transaction_value_epochs,
+            )
+            transaction_value_path = save_transaction_value_model(
+                transaction_value_model,
+                args.transaction_value_output,
+            )
+            report["stages"]["transaction_value_training"] = {
+                "records": transaction_record_count,
+                "loss": transaction_value_loss,
+                "elapsed_seconds": round(perf_counter() - stage_started, 2),
+                "model_path": str(transaction_value_path),
+            }
+            write_json(args.report, report)
+            print(
+                f"[Stage 2.5/4 complete] records={transaction_record_count} "
+                f"loss={transaction_value_loss:.6f} "
+                f"elapsed={(perf_counter() - stage_started) / 60:.1f}m",
+                flush=True,
+            )
+        else:
+            report["stages"]["transaction_value_training"] = {
+                "records": 0,
+                "skipped": True,
+                "reason": "No waiver/trade replay records were collected.",
+            }
+            write_json(args.report, report)
+
         stage_started = perf_counter()
         print("[Stage 3/4] Offline replay training...", flush=True)
         offline_loss = train_offline_policy(model, replay_buffer, epochs=args.offline_epochs)
@@ -436,6 +495,7 @@ def main() -> None:
             diversity_mutation_boost=args.diversity_mutation_boost,
             transaction_ablation=args.transaction_ablation,
             transaction_mode=args.transaction_mode,
+            transaction_value_model=transaction_value_model,
             seed=args.seed,
             rounds=args.rounds,
             lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,

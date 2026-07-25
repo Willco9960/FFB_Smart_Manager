@@ -25,6 +25,7 @@ from fantasy_engine.season import (
 )
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_season_simulation import run_historical_regular_season
+from models.transaction_value import TransactionValueNetwork
 from models.weekly_projection_service import WeeklyNeuralProjectionService
 
 WEEKLY_WIN_REWARD = 15.0
@@ -93,6 +94,7 @@ def evaluate_full_season_battle_royale(
     seed: int = 1,
     transaction_genome_fallback=None,
     projection_service: WeeklyNeuralProjectionService | None = None,
+    transaction_value_model: TransactionValueNetwork | None = None,
     season: int = 0,
     transaction_mode: TransactionMode = "hybrid",
 ) -> list[EvaluatedAgent]:
@@ -157,10 +159,12 @@ def evaluate_full_season_battle_royale(
                     waiver_agents[team.name] = HybridWaiverAgent(
                         neural_agent=neural_waiver_agent,
                         fallback_agent=fallback_waiver_agent,
+                        value_model=transaction_value_model,
                     )
                     trade_agents[team.name] = HybridTradeAgent(
                         neural_agent=neural_trade_agent,
                         fallback_agent=fallback_trade_agent,
+                        value_model=transaction_value_model,
                     )
                 else:
                     waiver_agents[team.name] = neural_waiver_agent

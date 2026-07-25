@@ -14,6 +14,8 @@ from fantasy_engine.league import League
 from fantasy_engine.player import Player
 from fantasy_engine.team import Team
 from fantasy_engine.transactions import TradeProposal, WaiverClaim
+from models.modular_manager_policy import create_modular_policy_features
+from models.transaction_value import TransactionValueNetwork
 
 
 def _updated_waiver_team(team: Team, claim: WaiverClaim) -> Team:
@@ -42,6 +44,28 @@ class HybridWaiverAgent:
     neural_agent: WaiverAgent
     fallback_agent: WaiverAgent
     neural_margin: float = 0.5
+    value_model: TransactionValueNetwork | None = None
+    value_weight: float = 2.0
+    risk_penalty: float = 0.75
+    minimum_value_lower_bound: float = -0.25
+
+    def _learned_lower_bound(
+        self,
+        team: Team,
+        claim: WaiverClaim,
+        available_players: list[Player],
+        week: int,
+    ) -> float:
+        if self.value_model is None:
+            return 0.0
+        features = create_modular_policy_features(
+            claim.add_player,
+            team,
+            available_players,
+            current_week=week,
+        )
+        mean, uncertainty = self.value_model.score_normalized(features, "waiver")
+        return mean - self.risk_penalty * uncertainty
 
     def choose_waiver_claim(
         self,
@@ -58,6 +82,11 @@ class HybridWaiverAgent:
         if neural_claim is None:
             return fallback_claim
         if fallback_claim is None:
+            if (
+                self._learned_lower_bound(team, neural_claim, available_players, week)
+                < self.minimum_value_lower_bound
+            ):
+                return None
             return neural_claim
 
         neural_improvement = _waiver_improvement(self.neural_agent, team, neural_claim)
@@ -67,7 +96,24 @@ class HybridWaiverAgent:
         if fallback_improvement is None:
             return neural_claim
 
-        if neural_improvement >= fallback_improvement + self.neural_margin:
+        neural_lower_bound = self._learned_lower_bound(
+            team,
+            neural_claim,
+            available_players,
+            week,
+        )
+        fallback_lower_bound = self._learned_lower_bound(
+            team,
+            fallback_claim,
+            available_players,
+            week,
+        )
+        neural_quality = neural_improvement + self.value_weight * neural_lower_bound
+        fallback_quality = fallback_improvement + self.value_weight * fallback_lower_bound
+        if (
+            neural_lower_bound >= self.minimum_value_lower_bound
+            and neural_quality >= fallback_quality + self.neural_margin
+        ):
             return neural_claim
         return fallback_claim
 
@@ -135,6 +181,45 @@ class HybridTradeAgent:
     neural_agent: TradeAgent
     fallback_agent: TradeAgent
     neural_margin: float = 1.0
+    value_model: TransactionValueNetwork | None = None
+    value_weight: float = 2.0
+    risk_penalty: float = 0.75
+    minimum_value_lower_bound: float = -0.25
+
+    def _learned_lower_bound(
+        self,
+        team: Team,
+        opposing_team: Team,
+        proposal: TradeProposal,
+        week: int,
+    ) -> float:
+        if self.value_model is None:
+            return 0.0
+        requested = proposal.requested_players[0]
+        offered = proposal.offered_players[0]
+        requested_features = create_modular_policy_features(
+            requested,
+            team,
+            team.roster,
+            current_week=week,
+        )
+        offered_features = create_modular_policy_features(
+            offered,
+            opposing_team,
+            opposing_team.roster,
+            current_week=week,
+        )
+        requested_mean, requested_uncertainty = self.value_model.score_normalized(
+            requested_features,
+            "trade",
+        )
+        offered_mean, offered_uncertainty = self.value_model.score_normalized(
+            offered_features,
+            "trade",
+        )
+        return (requested_mean + offered_mean) / 2.0 - self.risk_penalty * (
+            requested_uncertainty + offered_uncertainty
+        ) / 2.0
 
     def choose_trade_proposal(
         self,
@@ -153,6 +238,14 @@ class HybridTradeAgent:
         if neural_proposal is None:
             return fallback_proposal
         if fallback_proposal is None:
+            opposing_team = next(
+                team for team in opposing_teams if team.name == neural_proposal.receiving_team_name
+            )
+            if (
+                self._learned_lower_bound(team, opposing_team, neural_proposal, week)
+                < self.minimum_value_lower_bound
+            ):
+                return None
             return neural_proposal
 
         neural_value = _trade_value(self.neural_agent, team, opposing_teams, neural_proposal)
@@ -165,6 +258,29 @@ class HybridTradeAgent:
         neural_team, neural_opponent, neural_total = neural_value
         if neural_team < 0.0 or neural_opponent < 0.0:
             return fallback_proposal
-        if neural_total >= fallback_value[2] + self.neural_margin:
+        neural_opposing_team = next(
+            team for team in opposing_teams if team.name == neural_proposal.receiving_team_name
+        )
+        fallback_opposing_team = next(
+            team for team in opposing_teams if team.name == fallback_proposal.receiving_team_name
+        )
+        neural_lower_bound = self._learned_lower_bound(
+            team,
+            neural_opposing_team,
+            neural_proposal,
+            week,
+        )
+        fallback_lower_bound = self._learned_lower_bound(
+            team,
+            fallback_opposing_team,
+            fallback_proposal,
+            week,
+        )
+        neural_quality = neural_total + self.value_weight * neural_lower_bound
+        fallback_quality = fallback_value[2] + self.value_weight * fallback_lower_bound
+        if (
+            neural_lower_bound >= self.minimum_value_lower_bound
+            and neural_quality >= fallback_quality + self.neural_margin
+        ):
             return neural_proposal
         return fallback_proposal
