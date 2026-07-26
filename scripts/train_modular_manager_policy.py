@@ -24,7 +24,7 @@ from evolution.offline_replay import (
     DecisionReplayRecord,
     train_offline_policy,
 )
-from evolution.transaction_value_training import train_transaction_value_model
+from evolution.transaction_value_training import train_transaction_value_model_with_validation
 from fantasy_engine.draft import get_snake_draft_order, run_snake_draft
 from fantasy_engine.league import League
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
@@ -153,6 +153,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=50,
         help="Epochs used to train the waiver/trade value-risk model from replay rewards.",
+    )
+    parser.add_argument(
+        "--transaction-value-validation-seasons",
+        type=int,
+        default=2,
+        help="Most recent seasons held out for chronological transaction-value validation.",
+    )
+    parser.add_argument(
+        "--transaction-value-min-validation-records",
+        type=int,
+        default=50,
+        help="Minimum holdout records required before the value model can activate.",
     )
     parser.add_argument(
         "--transaction-value-output",
@@ -347,6 +359,10 @@ def main() -> None:
             "final_selection_count": args.final_selection_count,
             "collect_season_replay": args.collect_season_replay,
             "transaction_value_epochs": args.transaction_value_epochs,
+            "transaction_value_validation_seasons": args.transaction_value_validation_seasons,
+            "transaction_value_min_validation_records": (
+                args.transaction_value_min_validation_records
+            ),
             "transaction_value_output": str(args.transaction_value_output),
         },
         "stages": {},
@@ -416,6 +432,7 @@ def main() -> None:
         )
 
         transaction_value_model = None
+        transaction_value_model_approved = False
         transaction_records = [
             record
             for record in replay_buffer.records
@@ -425,10 +442,16 @@ def main() -> None:
             stage_started = perf_counter()
             print("[Stage 2.5/4] Training transaction value-risk model...", flush=True)
             transaction_value_model = TransactionValueNetwork()
-            transaction_value_loss, transaction_record_count = train_transaction_value_model(
+            (
+                transaction_value_loss,
+                transaction_record_count,
+                transaction_value_validation,
+            ) = train_transaction_value_model_with_validation(
                 model=transaction_value_model,
                 records=transaction_records,
                 epochs=args.transaction_value_epochs,
+                holdout_seasons=args.transaction_value_validation_seasons,
+                minimum_validation_records=args.transaction_value_min_validation_records,
             )
             transaction_value_path = save_transaction_value_model(
                 transaction_value_model,
@@ -439,11 +462,14 @@ def main() -> None:
                 "loss": transaction_value_loss,
                 "elapsed_seconds": round(perf_counter() - stage_started, 2),
                 "model_path": str(transaction_value_path),
+                "validation": transaction_value_validation.to_dict(),
             }
+            transaction_value_model_approved = transaction_value_validation.approved
             write_json(args.report, report)
             print(
                 f"[Stage 2.5/4 complete] records={transaction_record_count} "
                 f"loss={transaction_value_loss:.6f} "
+                f"validation_approved={transaction_value_model_approved} "
                 f"elapsed={(perf_counter() - stage_started) / 60:.1f}m",
                 flush=True,
             )
@@ -454,6 +480,21 @@ def main() -> None:
                 "reason": "No waiver/trade replay records were collected.",
             }
             write_json(args.report, report)
+
+        requested_transaction_mode = args.transaction_mode
+        effective_transaction_mode = requested_transaction_mode
+        if requested_transaction_mode == "hybrid" and not transaction_value_model_approved:
+            effective_transaction_mode = "genome"
+            print(
+                "[Safety gate] Transaction value model failed chronological validation; "
+                "using genome transactions for self-play and final evaluation.",
+                flush=True,
+            )
+        report["configuration"]["effective_transaction_mode"] = effective_transaction_mode
+        report["configuration"]["transaction_value_model_approved"] = (
+            transaction_value_model_approved
+        )
+        write_json(args.report, report)
 
         stage_started = perf_counter()
         print("[Stage 3/4] Offline replay training...", flush=True)
@@ -494,8 +535,10 @@ def main() -> None:
             diversity_floor=args.diversity_floor,
             diversity_mutation_boost=args.diversity_mutation_boost,
             transaction_ablation=args.transaction_ablation,
-            transaction_mode=args.transaction_mode,
-            transaction_value_model=transaction_value_model,
+            transaction_mode=effective_transaction_mode,
+            transaction_value_model=(
+                transaction_value_model if transaction_value_model_approved else None
+            ),
             seed=args.seed,
             rounds=args.rounds,
             lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,

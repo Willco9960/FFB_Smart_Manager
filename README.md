@@ -105,6 +105,20 @@ hybrid, genome, neural, and disabled transaction arms in the final ablation;
 the new value model is an experiment, not an assumption that neural actions
 will always win.
 
+The value model now uses a chronological holdout (the most recent seasons by
+default).  It must beat a mean-value baseline, reach a minimum sign-accuracy
+threshold, and achieve reasonable uncertainty coverage before it is allowed
+to influence self-play.  If it fails validation, a requested hybrid run is
+automatically downgraded to genome transactions and the report records both
+the requested and effective modes.  Adjust this with
+`--transaction-value-validation-seasons` and
+`--transaction-value-min-validation-records`.
+
+When `--transaction-ablation` is enabled, final policy selection now scores
+each candidate under every transaction arm and records the empirically best
+`recommended_transaction_mode`, instead of assuming the requested hybrid arm
+is best.
+
 ### Optional local coach model
 
 The numerical policy and simulator remain responsible for draft, lineup,

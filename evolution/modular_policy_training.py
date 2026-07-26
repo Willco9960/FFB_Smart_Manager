@@ -559,11 +559,26 @@ def train_modular_policy_self_play(
             - risk_penalty * evaluation["full_evaluation_fitness_stddev"],
             2,
         )
+        transaction_arm_scores = {
+            evaluation["transaction_mode"]: evaluation["risk_adjusted_fitness"]
+        }
+        for mode, arm in evaluation["transaction_ablation"].items():
+            arm["risk_adjusted_fitness"] = round(
+                arm["fitness"] - risk_penalty * arm["fitness_stddev"],
+                2,
+            )
+            transaction_arm_scores[mode] = arm["risk_adjusted_fitness"]
+        recommended_mode, recommended_score = max(
+            transaction_arm_scores.items(),
+            key=lambda item: item[1],
+        )
+        evaluation["recommended_transaction_mode"] = recommended_mode
+        evaluation["recommended_transaction_risk_adjusted_fitness"] = recommended_score
 
     selected_final_index = max(
         range(len(final_evaluations)),
         key=lambda index: (
-            final_evaluations[index]["risk_adjusted_fitness"],
+            final_evaluations[index]["recommended_transaction_risk_adjusted_fitness"],
             final_evaluations[index]["full_evaluation_fitness"],
         ),
     )

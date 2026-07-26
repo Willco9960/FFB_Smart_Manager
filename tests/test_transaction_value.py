@@ -3,7 +3,11 @@ from pathlib import Path
 
 from agents.hybrid_transaction_agents import HybridWaiverAgent
 from evolution.offline_replay import DecisionReplayRecord
-from evolution.transaction_value_training import train_transaction_value_model
+from evolution.transaction_value_training import (
+    split_transaction_records,
+    train_transaction_value_model,
+    train_transaction_value_model_with_validation,
+)
 from fantasy_engine.league import League
 from fantasy_engine.player import Player
 from fantasy_engine.team import Team
@@ -64,6 +68,61 @@ def test_transaction_value_model_round_trips(tmp_path: Path):
     restored = loaded.score(features(0.25), "waiver")
 
     assert restored == original
+
+
+def test_transaction_value_split_is_chronological():
+    records = [
+        record("waiver", 1.0),
+        record("waiver", 2.0),
+    ]
+    records = [
+        DecisionReplayRecord(
+            season=season,
+            week=item.week,
+            decision_type=item.decision_type,
+            action_key=item.action_key,
+            features=item.features,
+            reward=item.reward,
+            team_name=item.team_name,
+            source=item.source,
+        )
+        for season, item in zip((2020, 2021), records, strict=True)
+    ]
+
+    train_records, validation_records, holdout_seasons = split_transaction_records(
+        records,
+        holdout_seasons=1,
+    )
+
+    assert [item.season for item in train_records] == [2020]
+    assert [item.season for item in validation_records] == [2021]
+    assert holdout_seasons == (2021,)
+
+
+def test_transaction_value_validation_gate_requires_enough_holdout_data():
+    model = TransactionValueNetwork()
+    loss, count, validation = train_transaction_value_model_with_validation(
+        model,
+        [
+            DecisionReplayRecord(
+                season=season,
+                week=4,
+                decision_type="waiver",
+                action_key=str(season),
+                features=features(float(season)),
+                reward=float(season),
+            )
+            for season in (2020, 2021)
+        ],
+        epochs=1,
+        holdout_seasons=1,
+        minimum_validation_records=10,
+    )
+
+    assert math.isfinite(loss)
+    assert count == 1
+    assert validation.validation_records == 1
+    assert not validation.approved
 
 
 class NegativeValueModel:
