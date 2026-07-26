@@ -138,3 +138,39 @@ def test_transaction_rewards_accumulate_into_original_decision_across_future_wee
     )
 
     assert updated[0].reward == 16.0
+
+
+def test_transaction_rewards_ignore_unexecuted_replay_records():
+    incoming = Player(name="Added", position="WR", team="ATL")
+    features = create_modular_policy_features(incoming, Team(name="Team 1"), [incoming])
+    records = [
+        DecisionReplayRecord(
+            season=2021,
+            week=3,
+            decision_type="waiver",
+            action_key="Added",
+            features=features,
+            reward=0.0,
+            team_name="Team 1",
+            executed=False,
+        )
+    ]
+
+    updated = apply_transaction_rewards(
+        records,
+        [
+            TransactionImpact(
+                week=3,
+                transaction_type="waiver",
+                team_name="Team 1",
+                incoming_player_names=("Added",),
+                outgoing_player_names=("Dropped",),
+                incoming_points=10.0,
+                outgoing_points=0.0,
+                net_points=10.0,
+                reward=10.0,
+            )
+        ],
+    )
+
+    assert updated[0].reward == 0.0

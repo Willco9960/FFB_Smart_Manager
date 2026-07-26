@@ -22,6 +22,8 @@ class DecisionReplayRecord:
     reward: float
     team_name: str = ""
     source: str = "historical"
+    executed: bool = True
+    executed: bool = True
 
     def __post_init__(self) -> None:
         if self.decision_type not in DECISION_TYPES:

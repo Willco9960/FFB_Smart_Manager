@@ -146,6 +146,7 @@ def apply_transaction_rewards(
                 and record.team_name == impact.team_name
                 and record.decision_type == impact.transaction_type
                 and record.action_key == incoming_key
+                and record.executed
             )
         ]
         if matching_indices:
@@ -229,6 +230,7 @@ def run_weekly_waivers(
                     reward=0.0,
                     team_name=team.name,
                     source="historical_waiver",
+                    executed=False,
                 )
             )
 
@@ -261,6 +263,22 @@ def run_weekly_waivers(
 
     waiver_order = create_inverse_standings_waiver_order(standings)
     result = process_waiver_claims(league, claims, waiver_order)
+
+    if replay_records is not None:
+        processed_keys = {
+            (claim.team_name, claim.add_player.name)
+            for claim in result.processed_claims
+        }
+        for index, record in enumerate(replay_records):
+            if (
+                record.season == season
+                and record.week == week
+                and record.decision_type == "waiver"
+            ):
+                replay_records[index] = replace(
+                    record,
+                    executed=(record.team_name, record.action_key) in processed_keys,
+                )
 
     return result.transactions
 
@@ -345,6 +363,7 @@ def run_weekly_trades(
                         reward=0.0,
                         team_name=team_name,
                         source="historical_trade",
+                        executed=False,
                     ),
                     DecisionReplayRecord(
                         season=season,
@@ -360,6 +379,7 @@ def run_weekly_trades(
                         reward=0.0,
                         team_name=projected_proposal.receiving_team_name,
                         source="historical_trade",
+                        executed=False,
                     ),
                 ]
             )
@@ -382,6 +402,20 @@ def run_weekly_trades(
         transactions.append(apply_trade(league, proposal))
         traded_team_names.add(proposal.proposing_team_name)
         traded_team_names.add(proposal.receiving_team_name)
+
+        if replay_records is not None:
+            executed_keys = {
+                (proposal.proposing_team_name, requested_key),
+                (proposal.receiving_team_name, offered_key),
+            }
+            for index, record in enumerate(replay_records):
+                if (
+                    record.season == season
+                    and record.week == week
+                    and record.decision_type == "trade"
+                    and (record.team_name, record.action_key) in executed_keys
+                ):
+                    replay_records[index] = replace(record, executed=True)
 
     return transactions
 

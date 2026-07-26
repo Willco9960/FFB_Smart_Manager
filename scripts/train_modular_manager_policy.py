@@ -459,6 +459,10 @@ def main() -> None:
             )
             report["stages"]["transaction_value_training"] = {
                 "records": transaction_record_count,
+                "executed_records": sum(record.executed for record in transaction_records),
+                "rejected_or_unexecuted_records": sum(
+                    not record.executed for record in transaction_records
+                ),
                 "loss": transaction_value_loss,
                 "elapsed_seconds": round(perf_counter() - stage_started, 2),
                 "model_path": str(transaction_value_path),

@@ -114,6 +114,10 @@ the requested and effective modes.  Adjust this with
 `--transaction-value-validation-seasons` and
 `--transaction-value-min-validation-records`.
 
+Replay records now retain whether a waiver or trade actually executed.  Future
+transaction rewards are only attributed to executed actions, while rejected
+proposals remain explicit zero-reward examples for value-model training.
+
 When `--transaction-ablation` is enabled, final policy selection now scores
 each candidate under every transaction arm and records the empirically best
 `recommended_transaction_mode`, instead of assuming the requested hybrid arm
