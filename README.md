@@ -99,6 +99,19 @@ For a visible overnight run with the new stage:
 python -u -m scripts.train_modular_manager_policy --start-season 2001 --end-season 2024 --population 30 --generations 12 --selection 10 --epochs 50 --offline-epochs 50 --collect-season-replay --transaction-value-epochs 100 2>&1 | Tee-Object -FilePath logs/training_modular_transaction_value.log
 ```
 
+For a bounded overnight run, use the built-in profile.  It rotates through 12
+seasons per generation, evaluates all seasons every fifth generation, and is
+intended to finish comfortably within a normal 8–9 hour window on the current
+hardware:
+
+```powershell
+python -u -m scripts.train_modular_manager_policy --start-season 2001 --end-season 2024 --selection 8 --epochs 50 --offline-epochs 50 --collect-season-replay --transaction-ablation --transaction-mode hybrid --transaction-value-epochs 100 --overnight-profile 2>&1 | Tee-Object -FilePath logs/training_modular_overnight.log
+```
+
+The profile reduces self-play work to about one third of the previous 30×12×24
+configuration while retaining a full historical evaluation periodically and
+at the end.
+
 The JSON report includes `stages.transaction_value_training` with the number
 of waiver/trade replay records, final loss, and saved model path.  Compare the
 hybrid, genome, neural, and disabled transaction arms in the final ablation;

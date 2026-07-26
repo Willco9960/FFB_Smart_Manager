@@ -174,7 +174,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
     parser.add_argument("--report", type=Path, default=REPORT_PATH)
     parser.add_argument("--checkpoint-dir", type=Path, default=CHECKPOINT_DIR)
-    return parser.parse_args()
+    parser.add_argument(
+        "--overnight-profile",
+        action="store_true",
+        help=(
+            "Use a bounded 8-9 hour configuration: population 24, 10 generations, "
+            "12 rotating seasons, and a full evaluation every 5 generations."
+        ),
+    )
+    args = parser.parse_args()
+    if args.overnight_profile:
+        args.population = 24
+        args.generations = 10
+        args.selection = 8
+        args.scenarios_per_generation = 12
+        args.full_evaluation_every = 5
+        args.anchor_scenarios_per_generation = 4
+        args.final_selection_count = 3
+    return args
 
 
 def create_training_league(season: int) -> League:
@@ -364,6 +381,7 @@ def main() -> None:
                 args.transaction_value_min_validation_records
             ),
             "transaction_value_output": str(args.transaction_value_output),
+            "overnight_profile": args.overnight_profile,
         },
         "stages": {},
         "generations": [],
@@ -371,6 +389,12 @@ def main() -> None:
     write_json(args.report, report)
     print(f"Training started: {started_at.isoformat()}", flush=True)
     print(f"Seasons: {args.start_season}-{args.end_season} ({len(seasons)} scenarios)", flush=True)
+    if args.overnight_profile:
+        print(
+            "Overnight profile: population=24 generations=10 "
+            "scenarios_per_generation=12 full_evaluation_every=5",
+            flush=True,
+        )
     if args.scenarios_per_generation > 0:
         print(
             f"Scenario rotation: {args.scenarios_per_generation} per generation; "
