@@ -57,8 +57,15 @@ class NeuralDraftAgent:
                 for player in eligible_players
             ]
             policy_scores = self.policy_network.score_decisions(features, "draft")
+            position_counts = self._position_counts(team)
             anchor_scores = [
-                self._anchor_score(player, team, available_players) for player in eligible_players
+                self._anchor_score(
+                    player,
+                    team,
+                    available_players,
+                    position_counts=position_counts,
+                )
+                for player in eligible_players
             ]
             scores = blend_policy_and_anchor_scores(policy_scores, anchor_scores)
             ranked = sorted(
@@ -96,11 +103,23 @@ class NeuralDraftAgent:
             create_draft_action_features(player, team, available_players)
         )
 
-    def _anchor_score(self, player, team, available_players) -> float:
-        position_counts = {
-            position: sum(roster_player.position == position for roster_player in team.roster)
-            for position in ("QB", "RB", "WR", "TE")
-        }
+    @staticmethod
+    def _position_counts(team: Team) -> dict[str, int]:
+        counts = {position: 0 for position in ("QB", "RB", "WR", "TE")}
+        for roster_player in team.roster:
+            if roster_player.position in counts:
+                counts[roster_player.position] += 1
+        return counts
+
+    def _anchor_score(
+        self,
+        player,
+        team,
+        available_players,
+        position_counts: dict[str, int] | None = None,
+    ) -> float:
+        if position_counts is None:
+            position_counts = self._position_counts(team)
         starter_need = {"QB": 1, "RB": 2, "WR": 2, "TE": 1}
         need_bonus = max(
             0, starter_need.get(player.position, 0) - position_counts.get(player.position, 0)

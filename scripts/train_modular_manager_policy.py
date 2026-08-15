@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 
+import torch
+
 from agents.genome_draft_agent import GenomeDraftAgent
 from agents.trade_agent import GenomeTradeAgent
 from agents.waiver_agent import GenomeWaiverAgent
@@ -17,6 +19,8 @@ from evolution.modular_behavior_cloning import (
 )
 from evolution.modular_policy_training import (
     ModularGenerationMetrics,
+    ModularTrainingState,
+    save_modular_training_state,
     train_modular_policy_self_play,
 )
 from evolution.offline_replay import (
@@ -46,6 +50,7 @@ from models.transaction_value import (
 OUTPUT_PATH = Path("data/models/modular_manager_policy.pt")
 REPORT_PATH = Path("reports/modular_training_report.json")
 CHECKPOINT_DIR = Path("data/models/modular_policy_checkpoints")
+STATE_CHECKPOINT_PATH = Path("data/models/modular_policy_training_state.pt")
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--risk-penalty",
         type=float,
-        default=0.10,
+        default=0.15,
         help="Penalty applied to cross-season fitness volatility during selection.",
     )
     parser.add_argument(
@@ -80,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--draft-exploration-rate",
         type=float,
-        default=0.04,
+        default=0.08,
         help=(
             "Probability that a neural drafter samples among its top candidates "
             "to preserve room diversity."
@@ -89,20 +94,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--draft-exploration-top-k",
         type=int,
-        default=5,
+        default=8,
         help="Candidate pool used when draft exploration triggers.",
     )
     parser.add_argument(
         "--diversity-floor",
         type=float,
-        default=0.002,
+        default=0.01,
         help="Increase mutation when normalized population diversity falls below this value.",
     )
     parser.add_argument(
         "--diversity-mutation-boost",
         type=float,
-        default=1.5,
+        default=2.0,
         help="Multiplier applied to mutation while the population is collapsing.",
+    )
+    parser.add_argument(
+        "--baseline-relative-weight",
+        type=float,
+        default=0.25,
+        help=(
+            "Weight given to fitness relative to same-scenario baseline opponents "
+            "during selection."
+        ),
+    )
+    parser.add_argument(
+        "--immigrant-fraction",
+        type=float,
+        default=0.10,
+        help=(
+            "Fraction of child policies periodically re-seeded from the warm-start "
+            "policy to prevent population collapse."
+        ),
     )
     parser.add_argument(
         "--transaction-ablation",
@@ -119,6 +142,18 @@ def parse_args() -> argparse.Namespace:
         help="Transaction policy used during self-play and as the primary final-evaluation arm.",
     )
     parser.add_argument("--rounds", type=int, default=16)
+    parser.add_argument(
+        "--training-device",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+        help="Device for batched behavioral/replay training; simulation remains CPU-bound.",
+    )
+    parser.add_argument(
+        "--evaluation-workers",
+        type=int,
+        default=8,
+        help="Parallel historical-scenario workers; 1 disables multiprocessing.",
+    )
     parser.add_argument(
         "--scenarios-per-generation",
         type=int,
@@ -140,13 +175,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--final-selection-count",
         type=int,
-        default=3,
+        default=8,
         help="Top sampled-generation candidates to compare on all seasons at the end.",
+    )
+    parser.add_argument(
+        "--candidate-archive-size",
+        type=int,
+        default=64,
+        help="Number of top generation candidates retained in checkpoints for final auditing.",
     )
     parser.add_argument(
         "--collect-season-replay",
         action="store_true",
         help="Collect leakage-safe lineup, waiver, and trade replay records from training seasons.",
+    )
+    parser.add_argument(
+        "--skip-final-evaluation",
+        action="store_true",
+        help=(
+            "Skip the expensive all-season candidate audit; useful for non-final "
+            "vacation segments."
+        ),
     )
     parser.add_argument(
         "--transaction-value-epochs",
@@ -175,6 +224,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", type=Path, default=REPORT_PATH)
     parser.add_argument("--checkpoint-dir", type=Path, default=CHECKPOINT_DIR)
     parser.add_argument(
+        "--state-checkpoint",
+        type=Path,
+        default=STATE_CHECKPOINT_PATH,
+        help="Atomic full training-state checkpoint written after each generation.",
+    )
+    parser.add_argument(
         "--overnight-profile",
         action="store_true",
         help=(
@@ -189,9 +244,22 @@ def parse_args() -> argparse.Namespace:
         args.selection = 8
         args.scenarios_per_generation = 12
         args.full_evaluation_every = 5
-        args.anchor_scenarios_per_generation = 4
-        args.final_selection_count = 3
+        args.anchor_scenarios_per_generation = 6
+        args.risk_penalty = 0.15
+        args.draft_exploration_rate = 0.08
+        args.draft_exploration_top_k = 8
+        args.final_selection_count = 8
+        args.baseline_relative_weight = 0.25
+        args.immigrant_fraction = 0.10
     return args
+
+
+def resolve_training_device(requested: str) -> torch.device:
+    if requested == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but no CUDA-capable PyTorch device is available.")
+    return torch.device(requested)
 
 
 def create_training_league(season: int) -> League:
@@ -293,12 +361,37 @@ def create_generation_callback(
             f"playoffs={metrics.best_playoff_rate:.1%} "
             f"championships={metrics.best_championship_rate:.1%} "
             f"baseline_avg={metrics.baseline_average_fitness} "
+            f"relative={metrics.best_baseline_relative_fitness} "
+            f"selection={metrics.selection_score} "
             f"diversity={metrics.policy_population_diversity:.4f} "
+            f"gph={metrics.generations_per_hour:.2f} "
             f"elapsed={metrics.elapsed_seconds / 3600:.2f}h",
             flush=True,
         )
 
     return on_generation
+
+
+def create_state_callback(
+    report: dict,
+    report_path: Path,
+    state_path: Path,
+    metadata: dict[str, object],
+):
+    def on_state(state: ModularTrainingState) -> None:
+        state.metadata.update(metadata)
+        save_modular_training_state(state, state_path)
+        report["state_checkpoint_path"] = str(state_path)
+        report["completed_generations"] = state.completed_generations
+        report["updated_at"] = datetime.now().astimezone().isoformat()
+        write_json(report_path, report)
+        print(
+            f"[Checkpoint] generation {state.completed_generations}/"
+            f"{state.target_generations} saved to {state_path}",
+            flush=True,
+        )
+
+    return on_state
 
 
 def create_final_evaluation_callback(
@@ -315,6 +408,7 @@ def create_final_evaluation_callback(
         final_report["selected_checkpoint_path"] = str(checkpoint_path)
         report["final_evaluation"] = final_report
         report["selected_checkpoint_path"] = str(checkpoint_path)
+        report["selected_transaction_mode"] = final_report["selected_transaction_mode"]
         report["updated_at"] = datetime.now().astimezone().isoformat()
         write_json(report_path, report)
 
@@ -326,7 +420,9 @@ def create_final_evaluation_callback(
         try:
             print(
                 f"[Final full evaluation] selected generation={selected_generation} "
+                f"mode={selected['recommended_transaction_mode']} "
                 f"fitness={selected['full_evaluation_fitness']:.2f} "
+                f"selected_score={selected['recommended_transaction_risk_adjusted_fitness']:.2f} "
                 f"wins={selected['wins']:.2f} "
                 f"playoffs={selected['playoff_rate']:.1%} "
                 f"championships={selected['championship_rate']:.1%}",
@@ -342,6 +438,7 @@ def create_final_evaluation_callback(
 
 def main() -> None:
     args = parse_args()
+    training_device = resolve_training_device(args.training_device)
     started_at = datetime.now().astimezone()
     run_started = perf_counter()
     seasons = list(range(args.start_season, args.end_season + 1))
@@ -367,14 +464,20 @@ def main() -> None:
             "draft_exploration_top_k": args.draft_exploration_top_k,
             "diversity_floor": args.diversity_floor,
             "diversity_mutation_boost": args.diversity_mutation_boost,
+            "baseline_relative_weight": args.baseline_relative_weight,
+            "immigrant_fraction": args.immigrant_fraction,
             "transaction_ablation": args.transaction_ablation,
             "transaction_mode": args.transaction_mode,
             "rounds": args.rounds,
+            "training_device": str(training_device),
+            "evaluation_workers": args.evaluation_workers,
             "scenarios_per_generation": args.scenarios_per_generation,
             "full_evaluation_every": args.full_evaluation_every,
             "anchor_scenarios_per_generation": args.anchor_scenarios_per_generation,
             "final_selection_count": args.final_selection_count,
+            "candidate_archive_size": args.candidate_archive_size,
             "collect_season_replay": args.collect_season_replay,
+            "skip_final_evaluation": args.skip_final_evaluation,
             "transaction_value_epochs": args.transaction_value_epochs,
             "transaction_value_validation_seasons": args.transaction_value_validation_seasons,
             "transaction_value_min_validation_records": (
@@ -382,6 +485,7 @@ def main() -> None:
             ),
             "transaction_value_output": str(args.transaction_value_output),
             "overnight_profile": args.overnight_profile,
+            "state_checkpoint": str(args.state_checkpoint),
         },
         "stages": {},
         "generations": [],
@@ -389,6 +493,7 @@ def main() -> None:
     write_json(args.report, report)
     print(f"Training started: {started_at.isoformat()}", flush=True)
     print(f"Seasons: {args.start_season}-{args.end_season} ({len(seasons)} scenarios)", flush=True)
+    print(f"Batched training device: {training_device}", flush=True)
     if args.overnight_profile:
         print(
             "Overnight profile: population=24 generations=10 "
@@ -412,7 +517,9 @@ def main() -> None:
         print("[Stage 1/4] Collecting behavioral draft examples...", flush=True)
         first_league = create_training_league(args.start_season)
         examples = collect_draft_examples(first_league, teacher)
-        imitation_loss = train_modular_behavior_policy(model, examples, epochs=args.epochs)
+        imitation_loss = train_modular_behavior_policy(
+            model, examples, epochs=args.epochs, device=training_device
+        )
         report["stages"]["behavior_cloning"] = {
             "examples": len(examples),
             "loss": imitation_loss,
@@ -474,6 +581,7 @@ def main() -> None:
                 model=transaction_value_model,
                 records=transaction_records,
                 epochs=args.transaction_value_epochs,
+                device=training_device,
                 holdout_seasons=args.transaction_value_validation_seasons,
                 minimum_validation_records=args.transaction_value_min_validation_records,
             )
@@ -526,7 +634,9 @@ def main() -> None:
 
         stage_started = perf_counter()
         print("[Stage 3/4] Offline replay training...", flush=True)
-        offline_loss = train_offline_policy(model, replay_buffer, epochs=args.offline_epochs)
+        offline_loss = train_offline_policy(
+            model, replay_buffer, epochs=args.offline_epochs, device=training_device
+        )
         report["stages"]["offline_training"] = {
             "loss": offline_loss,
             "elapsed_seconds": round(perf_counter() - stage_started, 2),
@@ -540,6 +650,12 @@ def main() -> None:
 
         stage_started = perf_counter()
         print("[Stage 4/4] Self-play evolution starting...", flush=True)
+        # The simulator is intentionally CPU/process based.  Moving the small
+        # policy to CPU before it crosses process boundaries avoids CUDA context
+        # duplication and lets CUDA be reserved for the batched training stages.
+        model.to("cpu")
+        if transaction_value_model is not None:
+            transaction_value_model.to("cpu")
         scenarios = [
             (
                 create_training_league(season),
@@ -560,8 +676,10 @@ def main() -> None:
             elite_count=args.elite_count,
             draft_exploration_rate=args.draft_exploration_rate,
             draft_exploration_top_k=args.draft_exploration_top_k,
-            diversity_floor=args.diversity_floor,
-            diversity_mutation_boost=args.diversity_mutation_boost,
+                    diversity_floor=args.diversity_floor,
+                    diversity_mutation_boost=args.diversity_mutation_boost,
+                    baseline_relative_weight=args.baseline_relative_weight,
+                    immigrant_fraction=args.immigrant_fraction,
             transaction_ablation=args.transaction_ablation,
             transaction_mode=effective_transaction_mode,
             transaction_value_model=(
@@ -569,6 +687,7 @@ def main() -> None:
             ),
             seed=args.seed,
             rounds=args.rounds,
+            evaluation_workers=args.evaluation_workers,
             lineup_rules=ESPN_OFFENSIVE_LINEUP_RULES,
             scenarios_per_generation=(
                 args.scenarios_per_generation if args.scenarios_per_generation > 0 else None
@@ -576,6 +695,7 @@ def main() -> None:
             full_evaluation_interval=args.full_evaluation_every,
             anchor_scenarios_per_generation=args.anchor_scenarios_per_generation,
             final_selection_count=args.final_selection_count,
+            candidate_archive_size=args.candidate_archive_size,
             generation_callback=create_generation_callback(
                 report,
                 args.report,
@@ -585,6 +705,39 @@ def main() -> None:
                 report,
                 args.report,
                 args.checkpoint_dir,
+            ) if not args.skip_final_evaluation else None,
+            run_final_evaluation=not args.skip_final_evaluation,
+            state_callback=create_state_callback(
+                report=report,
+                report_path=args.report,
+                state_path=args.state_checkpoint,
+                metadata={
+                    "start_season": args.start_season,
+                    "end_season": args.end_season,
+                    "population": args.population,
+                    "selection": args.selection,
+                    "seed": args.seed,
+                    "mutation_strength": args.mutation_strength,
+                    "final_mutation_strength": args.final_mutation_strength,
+                    "risk_penalty": args.risk_penalty,
+                    "elite_count": args.elite_count,
+                    "draft_exploration_rate": args.draft_exploration_rate,
+                    "draft_exploration_top_k": args.draft_exploration_top_k,
+                    "diversity_floor": args.diversity_floor,
+                    "diversity_mutation_boost": args.diversity_mutation_boost,
+                    "baseline_relative_weight": args.baseline_relative_weight,
+                    "immigrant_fraction": args.immigrant_fraction,
+                    "transaction_ablation": args.transaction_ablation,
+                    "transaction_mode": effective_transaction_mode,
+                    "transaction_value_output": str(args.transaction_value_output),
+                    "rounds": args.rounds,
+                    "evaluation_workers": args.evaluation_workers,
+                    "scenarios_per_generation": args.scenarios_per_generation,
+                    "full_evaluation_every": args.full_evaluation_every,
+                    "anchor_scenarios_per_generation": args.anchor_scenarios_per_generation,
+                    "final_selection_count": args.final_selection_count,
+                    "candidate_archive_size": args.candidate_archive_size,
+                },
             ),
         )
         report["stages"]["self_play"] = {

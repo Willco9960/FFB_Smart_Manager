@@ -28,7 +28,11 @@ class NeuralLineupAgent:
 
     def choose_lineup(self, roster: list[Player]) -> StartingLineup:
         team = Team(name="Lineup Decision", roster=roster)
-        policy_scores = [self._score_player(player, team, roster) for player in roster]
+        if hasattr(self.policy_network, "score_decisions"):
+            features = [create_modular_policy_features(player, team, roster) for player in roster]
+            policy_scores = self.policy_network.score_decisions(features, "lineup")
+        else:
+            policy_scores = [self._score_player(player, team, roster) for player in roster]
         anchor_scores = [player.projected_score for player in roster]
         blended_scores = blend_policy_and_anchor_scores(policy_scores, anchor_scores)
         selection_scores = {

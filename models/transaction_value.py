@@ -103,10 +103,12 @@ class TransactionValueNetwork(nn.Module):
         decision_type: str,
     ) -> tuple[float, float]:
         self.eval()
-        players = torch.tensor([features.player_values], dtype=torch.float32)
+        device = next(self.parameters()).device
+        players = torch.tensor([features.player_values], dtype=torch.float32, device=device)
         states = torch.tensor(
             [self._fit_state_features(features.state_values)],
             dtype=torch.float32,
+            device=device,
         )
         with torch.no_grad():
             raw_mean, raw_log_scale = self.forward(players, states, decision_type)[0]

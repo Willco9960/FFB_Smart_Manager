@@ -99,8 +99,13 @@ class ModularManagerPolicyNetwork(nn.Module):
         )
 
     def encode(self, features: ModularPolicyFeatures) -> torch.Tensor:
-        player = torch.tensor([features.player_values], dtype=torch.float32)
-        state = torch.tensor([self._fit_state_features(features.state_values)], dtype=torch.float32)
+        device = next(self.parameters()).device
+        player = torch.tensor([features.player_values], dtype=torch.float32, device=device)
+        state = torch.tensor(
+            [self._fit_state_features(features.state_values)],
+            dtype=torch.float32,
+            device=device,
+        )
         return torch.cat((self.player_encoder(player), self.state_encoder(state)), dim=1)
 
     def _fit_state_features(self, values: tuple[float, ...]) -> tuple[float, ...]:
@@ -161,10 +166,12 @@ class ModularManagerPolicyNetwork(nn.Module):
         player_values = torch.tensor(
             [item.player_values for item in features],
             dtype=torch.float32,
+            device=next(self.parameters()).device,
         )
         state_values = torch.tensor(
             [self._fit_state_features(item.state_values) for item in features],
             dtype=torch.float32,
+            device=next(self.parameters()).device,
         )
         with torch.no_grad():
             scores = self.forward(

@@ -57,6 +57,7 @@ def train_transaction_value_model(
     records: list[DecisionReplayRecord],
     epochs: int = 50,
     learning_rate: float = 0.001,
+    device: torch.device | str = "cpu",
 ) -> tuple[float, int]:
     """Fit waiver/trade value and uncertainty to future transaction rewards."""
 
@@ -74,13 +75,15 @@ def train_transaction_value_model(
         model.target_means[index] = mean(rewards)
         model.target_scales[index] = max(pstdev(rewards), 1.0)
 
+    device = torch.device(device)
+    model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     final_loss = 0.0
 
     for _ in range(epochs):
         model.train()
         optimizer.zero_grad()
-        total_loss = torch.tensor(0.0)
+        total_loss = torch.tensor(0.0, device=device)
         total_count = 0
         for index, decision_type in enumerate(TRANSACTION_DECISION_TYPES):
             decision_records = transaction_records[decision_type]
@@ -89,6 +92,7 @@ def train_transaction_value_model(
             players = torch.tensor(
                 [record.features.player_values for record in decision_records],
                 dtype=torch.float32,
+                device=device,
             )
             states = torch.tensor(
                 [
@@ -96,6 +100,7 @@ def train_transaction_value_model(
                     for record in decision_records
                 ],
                 dtype=torch.float32,
+                device=device,
             )
             targets = torch.tensor(
                 [
@@ -104,6 +109,7 @@ def train_transaction_value_model(
                     for record in decision_records
                 ],
                 dtype=torch.float32,
+                device=device,
             )
             raw_output = model(players, states, decision_type)
             predicted_mean = raw_output[:, 0]
@@ -151,8 +157,7 @@ def evaluate_transaction_value_model(
 
     target_mean = mean(targets)
     mae = mean(
-        abs(prediction - target)
-        for prediction, target in zip(predictions, targets, strict=True)
+        abs(prediction - target) for prediction, target in zip(predictions, targets, strict=True)
     )
     baseline_mae = mean(abs(target - target_mean) for target in targets)
     sign_accuracy = mean(
@@ -182,6 +187,7 @@ def train_transaction_value_model_with_validation(
     records: list[DecisionReplayRecord],
     epochs: int = 50,
     learning_rate: float = 0.001,
+    device: torch.device | str = "cpu",
     holdout_seasons: int = 2,
     minimum_validation_records: int = 50,
 ) -> tuple[float, int, TransactionValueValidation]:
@@ -196,6 +202,7 @@ def train_transaction_value_model_with_validation(
         records=train_records,
         epochs=epochs,
         learning_rate=learning_rate,
+        device=device,
     )
     validation = evaluate_transaction_value_model(model, validation_records)
     validation_count = int(validation["records"] or 0)

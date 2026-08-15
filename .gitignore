@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+test_tmp_duration_final/
 .env
 data/raw/
 data/processed/
@@ -12,7 +13,7 @@ data/processed/*.parquet
 !data/processed/.gitkeep
 data/models/*.pt
 data/models/**/*.pt
-logs/*.log
-reports/*.json
-reports/*.png
-reports/*.pt
+data/models/vacation_runs/
+# Generated training output stays local; source code and documentation are tracked.
+logs/
+reports/

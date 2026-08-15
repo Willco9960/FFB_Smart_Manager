@@ -25,10 +25,13 @@ def train_modular_behavior_policy(
     examples: list[ModularImitationExample],
     epochs: int = 100,
     learning_rate: float = 0.003,
+    device: torch.device | str = "cpu",
 ) -> float:
     if not examples:
         raise ValueError("At least one imitation example is required.")
 
+    device = torch.device(device)
+    model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     loss_function = nn.HuberLoss()
     grouped_examples: dict[str, list[ModularImitationExample]] = {}
@@ -39,19 +42,22 @@ def train_modular_behavior_policy(
     for _ in range(epochs):
         model.train()
         optimizer.zero_grad()
-        total_loss = torch.tensor(0.0)
+        total_loss = torch.tensor(0.0, device=device)
         for decision_type, decision_examples in grouped_examples.items():
             players = torch.tensor(
                 [example.features.player_values for example in decision_examples],
                 dtype=torch.float32,
+                device=device,
             )
             states = torch.tensor(
                 [example.features.state_values for example in decision_examples],
                 dtype=torch.float32,
+                device=device,
             )
             targets = torch.tensor(
                 [example.target_score for example in decision_examples],
                 dtype=torch.float32,
+                device=device,
             )
             predictions = model(players, states, decision_type=decision_type)
             total_loss = total_loss + loss_function(predictions, targets).mean()

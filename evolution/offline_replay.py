@@ -52,6 +52,7 @@ def train_offline_policy(
     replay_buffer: DecisionReplayBuffer,
     epochs: int = 50,
     learning_rate: float = 0.001,
+    device: torch.device | str = "cpu",
 ) -> float:
     """Fit policy heads to historical rewards without future-season access.
 
@@ -73,6 +74,8 @@ def train_offline_policy(
         if values:
             reward_ranges[decision_type] = (min(values), max(values))
 
+    device = torch.device(device)
+    model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     loss_function = nn.HuberLoss(reduction="none")
     grouped_records: dict[str, list[DecisionReplayRecord]] = {}
@@ -83,7 +86,7 @@ def train_offline_policy(
     for _ in range(epochs):
         model.train()
         optimizer.zero_grad()
-        total_loss = torch.tensor(0.0)
+        total_loss = torch.tensor(0.0, device=device)
         total_weight = 0.0
         for decision_type, decision_records in grouped_records.items():
             low, high = reward_ranges[decision_type]
@@ -91,18 +94,22 @@ def train_offline_policy(
             players = torch.tensor(
                 [record.features.player_values for record in decision_records],
                 dtype=torch.float32,
+                device=device,
             )
             states = torch.tensor(
                 [record.features.state_values for record in decision_records],
                 dtype=torch.float32,
+                device=device,
             )
             targets = torch.tensor(
                 [(record.reward - low) / denominator for record in decision_records],
                 dtype=torch.float32,
+                device=device,
             )
             weights = torch.tensor(
                 [1.0 + min(abs(record.reward) / 100.0, 2.0) for record in decision_records],
                 dtype=torch.float32,
+                device=device,
             )
             predictions = model(players, states, decision_type=decision_type)
             total_loss = total_loss + (loss_function(predictions, targets) * weights).sum()

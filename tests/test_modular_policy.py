@@ -10,10 +10,14 @@ from evolution.modular_behavior_cloning import (
 )
 from evolution.modular_policy_training import (
     ModularGenerationMetrics,
+    ModularTrainingState,
     adapt_mutation_for_diversity,
     calculate_policy_population_diversity,
+    calculate_selection_score,
     crossover_modular_policies,
+    load_modular_training_state,
     mutate_modular_policy,
+    save_modular_training_state,
     select_scenarios_for_generation,
 )
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES
@@ -95,6 +99,15 @@ def test_adapt_mutation_for_diversity_keeps_healthy_population_stable():
     assert adapt_mutation_for_diversity(0.01, 0.01, 0.002, 1.5) == 0.01
 
 
+def test_selection_score_blends_absolute_and_baseline_relative_fitness():
+    assert calculate_selection_score(100.0, 40.0, 0.25) == pytest.approx(85.0)
+
+
+def test_selection_score_rejects_invalid_baseline_weight():
+    with pytest.raises(ValueError):
+        calculate_selection_score(100.0, 40.0, 1.1)
+
+
 def test_modular_policy_crossover_preserves_shape():
     first = ModularManagerPolicyNetwork()
     second = ModularManagerPolicyNetwork()
@@ -167,6 +180,41 @@ def test_modular_policy_batch_scores_match_scalar_scores():
     scalar_scores = [model.score_draft_action(item) for item in features]
 
     assert batch_scores == pytest.approx(scalar_scores)
+
+
+def test_modular_training_state_round_trips_generation_boundary(tmp_path: Path):
+    model = ModularManagerPolicyNetwork()
+    state = ModularTrainingState(
+        completed_generations=2,
+        target_generations=10,
+        history=[10.0, 12.5],
+        best_score=12.5,
+        best_risk_adjusted_score=11.5,
+        best_generation=2,
+        best_policy=model,
+        population=[model, mutate_modular_policy(model, __import__("random").Random(3))],
+        candidate_policies=[(2, 12.5, 11.5, model)],
+        rng_state=__import__("random").Random(9).getstate(),
+        elapsed_seconds=42.0,
+        metadata={"transaction_mode": "genome"},
+    )
+    path = tmp_path / "training_state.pt"
+
+    save_modular_training_state(state, path)
+    loaded = load_modular_training_state(path)
+
+    assert loaded.completed_generations == 2
+    assert loaded.target_generations == 10
+    assert loaded.history == [10.0, 12.5]
+    assert len(loaded.population) == 2
+    assert loaded.metadata == {"transaction_mode": "genome"}
+    assert loaded.best_policy.score_draft_action(
+        create_modular_policy_features(create_player("RB", "RB", 18.0), Team("Team"), [])
+    ) == pytest.approx(
+        state.best_policy.score_draft_action(
+            create_modular_policy_features(create_player("RB", "RB", 18.0), Team("Team"), [])
+        )
+    )
 
 
 def test_modular_generation_metrics_are_json_ready():

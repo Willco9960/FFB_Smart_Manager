@@ -1,85 +1,99 @@
-# Fantasy Football AI Manager — Project Instructions
+# Fantasy Football AI Manager: contributor and agent guide
+
+This file is public project documentation. It contains development conventions and architecture constraints, not credentials or private league information.
+
+## Spec-driven development is mandatory
+
+This project is **100% Spec-Driven Development**. The user supplies the desired behavior, constraints, priorities, and acceptance criteria. Coding agents produce the implementation, tests, reports, and documentation updates. Do not assume the user is hand-writing Python, PyTorch, or simulator code; explain generated changes in plain language and keep them independently verifiable.
+
+Every non-trivial change should connect:
+
+```text
+specification -> implementation -> tests -> experiment/report -> documentation
+```
+
+If the specification is ambiguous, preserve the safest existing behavior and document the assumption. Do not silently replace the user’s stated objective with a different optimization target.
 
 ## Project goal
 
-Build a Windows fantasy-football assistant that gathers league and player information, simulates complete historical fantasy seasons, and gives the user explainable recommendations for drafts, lineups, waivers, and trades.
+Build an explainable fantasy-football assistant that can gather league and player information, simulate historical seasons, and recommend drafts, lineups, waivers, and trades. The intended product is an assistant coach: real-world actions require human approval.
 
-The finished product is an assistant coach. It should recommend actions and require human approval before changing a real ESPN team. Do not design it as an unattended ESPN transaction bot.
+## System boundaries
 
-## Simulator end state
+Keep these responsibilities separate:
 
-The historical simulator must model the full season lifecycle:
+- **Projection model:** estimates player outcomes from pre-decision information.
+- **Manager policy:** chooses among legal actions.
+- **League engine:** enforces roster, scoring, schedule, ownership, and transaction rules.
+- **Evolution engine:** evaluates policies and creates new candidates.
+- **Reports/UI:** explain inputs, decisions, outcomes, and uncertainty.
 
-1. Draft a 10-team league.
-2. Set legal weekly lineups.
-3. Process waiver claims.
-4. Process realistic trades.
-5. Score weekly head-to-head matchups.
-6. Track standings and points for.
-7. Run the playoff bracket and championship.
-8. Record decisions, outcomes, and fitness metrics.
-9. Use complete-season results to evaluate and evolve manager policies.
+Do not use a neural network for deterministic legality checks or scoring rules. If a policy proposes an invalid action, the league engine must reject it and record why.
 
-Manager agents should be different from one another. The evolutionary system should select strong policies, crossbreed them, mutate them, and test them again across historical seasons.
+## Simulator contract
 
-## Data leakage rules
+The full-season simulator should model:
 
-Historical decisions must only use information available before the decision:
+1. A 10-team snake draft.
+2. Legal weekly lineups.
+3. Waiver claims and drops.
+4. Realistic trade proposals and acceptance rules.
+5. Weekly head-to-head matchups.
+6. Standings and points for.
+7. A six-team playoff bracket with first-round byes.
+8. Decision, transaction, and fitness reports.
+9. Evolution and evaluation across complete seasons.
 
-- A 2021 draft may use 2020 results and preseason projections, but never 2021 results.
-- Week N lineup, waiver, and trade decisions may use weeks before N, but never week N or future weeks.
-- Actual scores are applied only after the decision is made.
-- Walk-forward evaluation is preferred over random train/test splits.
+The project’s ESPN-style defaults are 10 teams, 14 regular-season weeks, six playoff teams, 16-player rosters, and QB/2 RB/2 WR/TE/FLEX/K/DST starters. If a workflow lacks reliable kicker or defense data, it may use offensive-only rules temporarily, but the limitation must be visible in the report.
 
-If a feature would not have been known by a real manager at that time, do not use it.
+## Anti-leakage contract
 
-## Fantasy rules
+- A 2021 draft may use 2020 results and preseason projections, never 2021 outcomes.
+- Week N decisions may use information from weeks before N, never Week N or future weeks.
+- Apply actual scores only after the decision point.
+- Prefer chronological and walk-forward validation over random splits.
+- Synthetic seasons are augmentation, not evidence that replaces real holdouts.
 
-Use the project’s ESPN-style defaults unless a league-specific setting overrides them:
+## Engineering conventions
 
-- 10 teams
-- 14 regular-season weeks
-- 6 playoff teams with 2 first-round byes
-- QB, 2 RB, 2 WR, TE, FLEX, K, and DST starting slots
-- 16-player rosters
-
-The current historical simulator may temporarily use offensive-only slots when K/DST data is unavailable, but this limitation must be clearly reported and not silently treated as ESPN-complete.
-
-Transactions must preserve legal ownership and roster state. Every draft pick, waiver move, trade, lineup decision, rejection, and result should be traceable in reports.
-
-## Architecture principles
-
-Keep responsibilities separate:
-
-- Projection model: predicts player value.
-- Manager policy: chooses draft, lineup, waiver, or trade actions.
-- League engine: enforces roster, scoring, schedule, and transaction rules.
-- Evolution engine: evaluates policies and creates new generations.
-- Reports/UI: explains decisions and outcomes.
-
-Do not use a neural network where a deterministic rules or optimization component is more appropriate. Lineup legality and transaction validation belong in the league engine.
-
-## Development rules
-
-- Use Python 3.12+ and the project virtual environment.
-- Use Ruff for linting and formatting.
+- Use Python 3.12+ and the repository virtual environment.
+- Use Ruff for formatting and linting.
 - Use pytest for every new behavior.
-- Run Ruff and the full test suite before committing.
-- Preserve existing user changes and do not use destructive Git commands.
-- Prefer small, testable modules over large scripts.
-- Keep generated datasets, model weights, caches, and secrets out of Git.
-- Never commit ESPN credentials, cookies, `SWID`, `espn_s2`, or `.env` files.
-- Use clear terminal reports so the user can inspect decisions week by week.
+- Preserve user changes; never use destructive Git commands.
+- Keep generated data, model weights, caches, logs, and secrets out of Git.
+- Never commit `.env`, ESPN cookies, `SWID`, `espn_s2`, or API keys.
+- Keep long-run output visible with `python -u` and PowerShell `Tee-Object`; put transcripts under `logs/`.
+- Add decision records when a choice is expensive to reverse or changes public behavior.
 
-## Current priorities
+## Verification checklist
 
-1. Finish and validate the complete historical simulator.
-2. Improve waiver and trade realism, including deadlines, limits, and multi-player trades.
-3. Add historical K/DST data and full ESPN lineup scoring.
-4. Add decision and fitness reports for evolutionary training.
-5. Connect the recommendation engine to read-only ESPN synchronization.
-6. Build the dashboard and human-approval workflow.
+Before committing:
 
-## Communication preferences
+```powershell
+ruff format .
+ruff check .
+pytest
+```
 
-Explain the result first, then the implementation details. Be honest about what is simulated, what is trained, and what remains simplified. When teaching, explain why a design choice matters instead of only giving commands.
+For model changes, also report:
+
+- Training and holdout seasons.
+- Feature cutoff and leakage controls.
+- Population, generations, seeds, and runtime.
+- Baseline and ablation comparisons.
+- Whether K/DST, waivers, trades, and playoffs were active.
+- Where checkpoints, reports, and logs were written.
+
+For long training, also report whether the run is resumable. A generation checkpoint alone is not proof that population state, optimizer state, random state, and the generation cursor can be restored. For the modular trainer, verify the full `training_state.pt` round-trip and record the recovery manifest path.
+
+For long modular runs, record `--evaluation-workers`. The simulator is CPU-heavy; use the bounded process-parallel path for real experiments and `--evaluation-workers 1` when debugging deterministic failures.
+
+For vacation runs, prefer `scripts.run_modular_vacation_training` with a unique `--run-id`. Reusing that run ID resumes completed segments; use `--force-restart` only when intentionally discarding the run. The final checkpoint must still be evaluated on a chronological holdout before it is called an improvement.
+
+## Documentation rules
+
+- README: human-facing purpose, quick start, capabilities, limitations, and links.
+- `docs/`: architecture, reproducibility, decisions, and roadmap.
+- `AGENTS.md`: commands, conventions, and guardrails for contributors and coding agents.
+- Changelog: user-visible changes and notable research changes.
+- Never hide a simplification behind polished prose; document it where a reader will find it.

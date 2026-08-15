@@ -252,4 +252,8 @@ def evaluate_full_season_battle_royale(
                 )
             )
 
-    return evaluated_agents
+    # Keep results aligned with the caller's original agent list. This makes
+    # scenario evaluation safe to distribute across worker processes without
+    # relying on object identity across process boundaries.
+    results_by_agent_id = {id(result.agent): result for result in evaluated_agents}
+    return [results_by_agent_id[id(agent)] for agent in agents]
