@@ -1,15 +1,10 @@
-"""Experimental tensorized full-season stages.
+"""Tensorized full-season stages for CUDA benchmarking and policy training.
 
-This module keeps league state in tensors and supports the same broad stages as
-the reference engine: draft, weekly projected lineups, inverse-standings
-waivers, mutually beneficial one-for-one trades, head-to-head standings, and
-the ESPN six-team playoff bracket. It is intentionally not wired into the
-production trainer until scenario-level parity reports are available.
-
-Transaction decisions are currently a fast tensorized approximation of the
-CPU agents. Waiver claims are selected in batched inverse-standings passes and
-trades search one-for-one top-K candidates. The CPU engine remains the
-behavioral authority until exact action-by-action parity is demonstrated.
+The module keeps league state in tensors and supports draft, weekly projected
+lineups, inverse-standings waivers, mutually beneficial one-for-one trades,
+head-to-head standings, and the ESPN six-team playoff bracket. Transaction
+decisions remain a fast tensorized approximation of the CPU agents; the CPU
+engine remains the behavioral authority until exact action parity is proven.
 """
 
 from __future__ import annotations
@@ -18,6 +13,7 @@ from dataclasses import dataclass, field
 
 import torch
 
+from gpu_sim.policy_draft import run_batched_policy_draft
 from gpu_sim.tensorized_draft import (
     DraftBatchResult,
     run_batched_roster_aware_draft,
@@ -115,17 +111,38 @@ class CudaSeasonState:
     def week_count(self) -> int:
         return self.weekly_projections.shape[1]
 
-    def draft(self) -> DraftBatchResult:
-        """Draft fixed-size rosters and update free-agent masks."""
+    def draft(
+        self,
+        policy_network: torch.nn.Module | None = None,
+        policy_team_indices: torch.Tensor | None = None,
+        draft_anchor_weight: float = 0.20,
+    ) -> DraftBatchResult:
+        """Draft rosters and update free-agent masks.
+
+        With ``policy_network`` supplied, one rotating team per scenario is
+        controlled by the neural policy while the remaining teams use the
+        tensorized projection-best baseline.
+        """
 
         if self.roster_size * self.team_count > self.player_count:
             raise ValueError("Not enough players to fill every roster.")
-        result = run_batched_roster_aware_draft(
-            self.draft_projections,
-            self.positions,
-            team_count=self.team_count,
-            rounds=self.roster_size,
-        )
+        if policy_network is None:
+            result = run_batched_roster_aware_draft(
+                self.draft_projections,
+                self.positions,
+                team_count=self.team_count,
+                rounds=self.roster_size,
+            )
+        else:
+            result = run_batched_policy_draft(
+                self.draft_projections,
+                self.positions,
+                policy_network,
+                policy_team_indices=policy_team_indices,
+                team_count=self.team_count,
+                rounds=self.roster_size,
+                anchor_weight=draft_anchor_weight,
+            )
         self.rosters = result.player_indices
         self.available = torch.ones_like(self.available)
         self.available.scatter_(1, self.rosters.reshape(self.scenario_count, -1), False)
@@ -534,10 +551,21 @@ def run_full_cuda_season(
     state: CudaSeasonState,
     *,
     enable_transactions: bool = True,
+    policy_network: torch.nn.Module | None = None,
+    policy_team_indices: torch.Tensor | None = None,
+    draft_anchor_weight: float = 0.20,
 ) -> CudaSeasonState:
-    """Execute draft, optional transactions, regular season, and playoffs."""
+    """Execute draft, transactions, regular season, and playoffs.
 
-    state.draft()
+    ``policy_network`` enables a real candidate-vs-baseline training episode;
+    transaction stages remain the existing tensorized waiver/trade engine.
+    """
+
+    state.draft(
+        policy_network=policy_network,
+        policy_team_indices=policy_team_indices,
+        draft_anchor_weight=draft_anchor_weight,
+    )
     regular_season_weeks = min(14, state.week_count - 3)
     for week in range(regular_season_weeks):
         if enable_transactions:

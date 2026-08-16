@@ -15,6 +15,13 @@ from gpu_sim.historical_adapter import (
     create_historical_cuda_inputs,
 )
 from gpu_sim.profiling import TensorStageProfiler
+from gpu_sim.policy_training import (
+    CudaGenerationMetrics,
+    CudaPolicyEvaluation,
+    evaluate_cuda_policy,
+    save_cuda_policy_checkpoint,
+    train_cuda_policy_population,
+)
 from gpu_sim.tensor_state import TensorScenarioBatch, create_synthetic_scenario_batch
 from gpu_sim.tensorized_draft import (
     DraftBatchResult,
@@ -39,6 +46,11 @@ __all__ = [
     "TensorScenarioBatch",
     "create_synthetic_scenario_batch",
     "TensorStageProfiler",
+    "CudaGenerationMetrics",
+    "CudaPolicyEvaluation",
+    "evaluate_cuda_policy",
+    "save_cuda_policy_checkpoint",
+    "train_cuda_policy_population",
     "CudaSeasonState",
     "create_synthetic_season_state",
     "run_full_cuda_season",

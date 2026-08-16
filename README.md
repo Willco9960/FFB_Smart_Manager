@@ -70,8 +70,7 @@ ruff check .
 pytest
 ```
 
-Benchmark the isolated CUDA simulation prototype (the production simulator is
-unchanged):
+Benchmark the isolated CUDA simulation path:
 
 ```powershell
 python -m scripts.compare_tensorized_backends --scenarios 4096 --players 512 --repeats 3
@@ -88,8 +87,31 @@ python -u -m scripts.benchmark_full_cuda_suite --device cuda --scenarios 256 --p
 ```
 
 This includes draft, weekly scoring, waivers, one-for-one trades, standings,
-and playoffs. It is intentionally separate from production training while
-CPU parity and throughput are being measured.
+and playoffs. It is a simulator throughput benchmark, not a learning run.
+
+### Run CUDA manager-policy training
+
+The CUDA trainer uses leakage-safe historical seasons, puts one neural policy
+against nine projection-best opponents, rotates the candidate's draft slot,
+and evolves policy weights with crossover and mutation. CUDA waivers and trades
+remain enabled in the season fitness loop; their tensorized actions are tracked
+as an optimization path and are still compared with the CPU reference.
+
+Smoke test:
+
+```powershell
+python -u -m scripts.train_cuda_manager_policy --device cuda --start-season 2021 --end-season 2021 --population 4 --generations 2 --selection 2 --scenario-repeats 4 2>&1 | Tee-Object -FilePath logs/cuda_manager_smoke.log
+```
+
+Overnight profile:
+
+```powershell
+python -u -m scripts.train_cuda_manager_policy --device cuda --start-season 2001 --end-season 2024 --population 16 --generations 100 --selection 4 --scenario-repeats 8 --loader-workers 4 --projection-noise 0.015 2>&1 | Tee-Object -FilePath logs/cuda_manager_overnight.log
+```
+
+The policy checkpoint is written after every generation to
+`data/models/cuda_manager_policy.pt`; progress is written to
+`reports/cuda_manager_training.json`.
 
 Run a real historical CPU/CUDA parity sweep:
 
