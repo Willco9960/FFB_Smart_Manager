@@ -14,6 +14,7 @@ from gpu_sim.historical_adapter import create_historical_cuda_inputs
 from gpu_sim.policy_training import (
     CudaGenerationMetrics,
     save_cuda_policy_checkpoint,
+    save_cuda_training_state,
     train_cuda_policy_population,
 )
 from models.modular_manager_policy import (
@@ -56,6 +57,18 @@ def parse_args() -> argparse.Namespace:
         default=Path("data/models/modular_manager_policy.pt"),
     )
     parser.add_argument("--output", type=Path, default=Path("data/models/cuda_manager_policy.pt"))
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=Path("data/models/cuda_manager_training_state.pt"),
+        help="Full-population checkpoint written after every generation.",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Resume the population checkpoint written by --checkpoint.",
+    )
     parser.add_argument("--report", type=Path, default=Path("reports/cuda_manager_training.json"))
     parser.add_argument(
         "--disable-transactions",
@@ -122,6 +135,15 @@ def main() -> None:
     print("Loading historical CUDA states...", flush=True)
     states = load_historical_states(args, device)
     holdout_state = load_holdout_state(args, device)
+    resume_state = None
+    if args.resume is not None:
+        if not args.resume.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {args.resume}")
+        resume_state = torch.load(args.resume, map_location="cpu", weights_only=False)
+        print(
+            f"Resuming after generation {resume_state['generation']} from {args.resume}",
+            flush=True,
+        )
     report = {
         "status": "running",
         "started_at": datetime.now().astimezone().isoformat(),
@@ -131,6 +153,7 @@ def main() -> None:
         "configuration": vars(args) | {"device": str(device)},
         "generations": [],
         "holdout": None,
+        "resumed_from": str(args.resume) if args.resume is not None else None,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
@@ -162,6 +185,8 @@ def main() -> None:
         )
 
     metrics_history: list[CudaGenerationMetrics] = []
+    if resume_state is not None:
+        metrics_history = [CudaGenerationMetrics(**item) for item in resume_state["metrics"]]
     best_policy, metrics_history = train_cuda_policy_population(
         initial_policy=initial_policy,
         historical_states=states,
@@ -177,10 +202,21 @@ def main() -> None:
         draft_anchor_weight=args.draft_anchor_weight,
         risk_penalty=args.risk_penalty,
         compile_policy=args.compile_policy,
+        resume_state=resume_state,
         generation_callback=on_generation,
+        checkpoint_callback=lambda generation, population, best_policy, metrics, rng: (
+            save_cuda_training_state(
+                args.checkpoint,
+                generation=generation,
+                population=population,
+                best_policy=best_policy,
+                metrics=metrics,
+                rng_state=rng.getstate(),
+            )
+        ),
     )
-    # The callback writes each checkpoint; this final write also covers a zero-
-    # generation smoke run and records the terminal status.
+    # The callback writes the full resumable population checkpoint each
+    # generation; this final write records the terminal best-policy artifact.
     save_cuda_policy_checkpoint(best_policy, args.output, metrics_history)
     report["status"] = "complete"
     report["completed_at"] = datetime.now().astimezone().isoformat()

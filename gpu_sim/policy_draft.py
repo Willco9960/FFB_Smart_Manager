@@ -65,18 +65,29 @@ def _build_player_features(
     candidate_same_position = available_position_counts.gather(
         1, positions.unsqueeze(0).expand(scenarios, -1)
     )
-    # Position and projection masks are formed per position below.  Avoiding a
-    # dense [scenarios, players, players] comparison is important on 8 GB GPUs.
+    # Rank each position with argsort/scatter rather than a dense
+    # [scenarios, players, players] comparison.  The old pairwise comparison
+    # was quadratic in the player pool and dominated repeated draft picks.
     greater_same_position = torch.zeros(
         (scenarios, player_count), dtype=torch.float32, device=projected_points.device
     )
     for position in range(4):
         position_mask = positions == position
-        position_values = projected_points.masked_fill(~(available & position_mask), float("-inf"))
-        greater_same_position[:, position_mask] = (
-            position_values[:, position_mask].unsqueeze(2)
-            > position_values[:, position_mask].unsqueeze(1)
-        ).sum(dim=2).to(torch.float32)
+        position_values = projected_points[:, position_mask].masked_fill(
+            ~available[:, position_mask], float("-inf")
+        )
+        if position_values.shape[1] == 0:
+            continue
+        order = torch.argsort(position_values, dim=1, descending=True)
+        sorted_ranks = torch.arange(
+            1,
+            position_values.shape[1] + 1,
+            device=projected_points.device,
+            dtype=torch.float32,
+        ).expand(scenarios, -1)
+        original_ranks = torch.empty_like(sorted_ranks)
+        original_ranks.scatter_(1, order, sorted_ranks)
+        greater_same_position[:, position_mask] = original_ranks
     position_rank = greater_same_position + 1.0
 
     player_features = torch.stack(
@@ -107,9 +118,7 @@ def _build_player_features(
         ],
         dim=1,
     )
-    flex_count = roster_positions.unsqueeze(2).eq(
-        torch.tensor((1, 2, 3), device=rosters.device)
-    ).any(dim=2).sum(dim=1).to(torch.float32)
+    flex_count = (roster_positions != 0).sum(dim=1).to(torch.float32)
     roster_player_points = projected_points.gather(1, roster.clamp_min(0)).masked_fill(
         roster < 0, 0.0
     )
@@ -184,6 +193,9 @@ def run_batched_policy_draft(
         device=projected_points.device,
     )
     position_one_hot = _position_one_hot(positions)
+    minimums = projected_points.new_tensor((1, 4, 4, 1))
+    maximums = projected_points.new_tensor((2, 6, 7, 3))
+    autocast_enabled = use_amp and projected_points.device.type == "cuda"
     counts = torch.zeros(
         (scenarios, team_count, 4), dtype=torch.int16, device=projected_points.device
     )
@@ -194,8 +206,6 @@ def run_batched_policy_draft(
         for team_index in order:
             team_counts = counts[:, team_index]
             candidate_counts = team_counts.unsqueeze(1) + position_one_hot.unsqueeze(0)
-            minimums = projected_points.new_tensor((1, 4, 4, 1))
-            maximums = projected_points.new_tensor((2, 6, 7, 3))
             missing = (minimums - candidate_counts).clamp_min(0).sum(dim=2)
             remaining = rounds - round_number - 1
             shape_allowed = (candidate_counts <= maximums).all(dim=2) & (missing <= remaining)
@@ -211,7 +221,6 @@ def run_batched_policy_draft(
             )
             flat_player = player_features.reshape(-1, player_features.shape[-1])
             flat_state = state_features.reshape(-1, state_features.shape[-1])
-            autocast_enabled = use_amp and projected_points.device.type == "cuda"
             with torch.autocast(
                 device_type=projected_points.device.type,
                 dtype=torch.float16,

@@ -92,6 +92,44 @@ def clone_cuda_state(
     )
 
 
+def fork_cuda_state(state: CudaSeasonState) -> CudaSeasonState:
+    """Create a mutable simulation copy without regenerating scenarios."""
+
+    return CudaSeasonState(
+        draft_projections=state.draft_projections.clone(),
+        weekly_projections=state.weekly_projections.clone(),
+        weekly_actual_points=state.weekly_actual_points,
+        positions=state.positions,
+        team_count=state.team_count,
+        roster_size=state.roster_size,
+    )
+
+
+def prepare_cuda_scenario_bank(
+    historical_states: list[CudaSeasonState],
+    *,
+    scenario_repeats: int = 8,
+    projection_noise: float = 0.015,
+    seed: int = 1,
+) -> list[CudaSeasonState]:
+    """Materialize common-random-number scenarios once for a training run.
+
+    Scenario tensors are immutable inputs; each policy receives a cheap mutable
+    fork. This avoids repeating random generation and tensor expansion for every
+    candidate while guaranteeing identical scenarios across the population.
+    """
+
+    return [
+        clone_cuda_state(
+            state,
+            scenario_repeats=scenario_repeats,
+            projection_noise=projection_noise,
+            seed=seed + season_index,
+        )
+        for season_index, state in enumerate(historical_states)
+    ]
+
+
 def _candidate_fitness(
     state: CudaSeasonState,
     candidate_team_indices: torch.Tensor,
@@ -126,6 +164,7 @@ def evaluate_cuda_policy(
     draft_anchor_weight: float = 0.20,
     risk_penalty: float = 0.10,
     compile_policy: bool = False,
+    scenario_bank: list[CudaSeasonState] | None = None,
 ) -> CudaPolicyEvaluation:
     """Evaluate one policy across historical seasons on the selected device."""
 
@@ -160,13 +199,9 @@ def evaluate_cuda_policy(
     points_values = []
     playoff_values = []
     champion_values = []
-    for season_index, template in enumerate(historical_states):
-        state = clone_cuda_state(
-            template,
-            scenario_repeats=scenario_repeats,
-            projection_noise=projection_noise,
-            seed=seed + season_index,
-        )
+    templates = historical_states if scenario_bank is None else scenario_bank
+    for template in templates:
+        state = fork_cuda_state(template)
         candidate_team_indices = (
             torch.arange(state.scenario_count, device=device) % state.team_count
         )
@@ -203,6 +238,38 @@ def evaluate_cuda_policy(
 
 def clone_policy(policy: ModularManagerPolicyNetwork) -> ModularManagerPolicyNetwork:
     return copy.deepcopy(policy)
+
+
+def _cpu_state_dict(policy: ModularManagerPolicyNetwork) -> dict[str, torch.Tensor]:
+    return {
+        name: value.detach().cpu().clone()
+        for name, value in policy.state_dict().items()
+    }
+
+
+def save_cuda_training_state(
+    output_path: Path,
+    *,
+    generation: int,
+    population: list[ModularManagerPolicyNetwork],
+    best_policy: ModularManagerPolicyNetwork,
+    metrics: list[CudaGenerationMetrics],
+    rng_state,
+) -> Path:
+    """Save enough state to resume the same evolutionary population."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "generation": generation,
+            "population": [_cpu_state_dict(policy) for policy in population],
+            "best_policy": _cpu_state_dict(best_policy),
+            "metrics": [metric.to_dict() for metric in metrics],
+            "rng_state": rng_state,
+        },
+        output_path,
+    )
+    return output_path
 
 
 def mutate_policy(
@@ -251,22 +318,49 @@ def train_cuda_policy_population(
     draft_anchor_weight: float = 0.20,
     risk_penalty: float = 0.10,
     compile_policy: bool = False,
+    scenario_bank: list[CudaSeasonState] | None = None,
+    resume_state: dict | None = None,
     generation_callback=None,
+    checkpoint_callback=None,
 ) -> tuple[ModularManagerPolicyNetwork, list[CudaGenerationMetrics]]:
     """Evolve neural manager policies using CUDA full-season fitness."""
 
     if selection_count < 1 or selection_count > population_size:
         raise ValueError("selection_count must be between one and population_size.")
     rng = random.Random(seed)
+    if scenario_bank is None:
+        scenario_bank = prepare_cuda_scenario_bank(
+            historical_states,
+            scenario_repeats=scenario_repeats,
+            projection_noise=projection_noise,
+            seed=seed,
+        )
     population = [clone_policy(initial_policy)]
     while len(population) < population_size:
         population.append(mutate_policy(initial_policy, rng, mutation_strength))
     best_policy = clone_policy(initial_policy)
     best_risk_adjusted = float("-inf")
     metrics: list[CudaGenerationMetrics] = []
+    start_generation = 1
+    if resume_state is not None:
+        policy_device = next(initial_policy.parameters()).device
+        population = []
+        for state_dict in resume_state["population"]:
+            policy = clone_policy(initial_policy)
+            policy.load_state_dict(state_dict)
+            population.append(policy.to(policy_device))
+        best_policy.load_state_dict(resume_state["best_policy"])
+        best_policy = best_policy.to(policy_device)
+        metrics = [CudaGenerationMetrics(**item) for item in resume_state["metrics"]]
+        start_generation = int(resume_state["generation"]) + 1
+        if metrics:
+            best_risk_adjusted = max(item.best_risk_adjusted_fitness for item in metrics)
+        rng.setstate(resume_state["rng_state"])
+        if len(population) != population_size:
+            raise ValueError("Resume checkpoint population size does not match population_size.")
     started = perf_counter()
 
-    for generation in range(1, generations + 1):
+    for generation in range(start_generation, generations + 1):
         evaluations = [
             evaluate_cuda_policy(
                 policy,
@@ -281,6 +375,7 @@ def train_cuda_policy_population(
                 draft_anchor_weight=draft_anchor_weight,
                 risk_penalty=risk_penalty,
                 compile_policy=compile_policy,
+                scenario_bank=scenario_bank,
             )
             for index, policy in enumerate(population)
         ]
@@ -323,6 +418,8 @@ def train_cuda_policy_population(
             second = rng.choice(selected)
             child = crossover_policy(first, second, rng)
             population.append(mutate_policy(child, rng, next_strength))
+        if checkpoint_callback is not None:
+            checkpoint_callback(generation, population, best_policy, metrics, rng)
 
     return best_policy, metrics
 

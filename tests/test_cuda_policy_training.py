@@ -1,7 +1,11 @@
 import torch
 
 from gpu_sim.full_season import create_synthetic_season_state, run_full_cuda_season
-from gpu_sim.policy_training import evaluate_cuda_policy, train_cuda_policy_population
+from gpu_sim.policy_training import (
+    evaluate_cuda_policy,
+    save_cuda_training_state,
+    train_cuda_policy_population,
+)
 from models.modular_manager_policy import ModularManagerPolicyNetwork
 
 
@@ -65,3 +69,53 @@ def test_cuda_policy_population_training_emits_generation_metrics():
     assert len(metrics) == 1
     assert metrics[0].generation == 1
     assert metrics[0].best_fitness >= 0.0
+
+
+def test_cuda_policy_training_checkpoint_resumes_population(tmp_path):
+    state = create_synthetic_season_state(
+        scenarios=1,
+        players=160,
+        weeks=17,
+        device=torch.device("cpu"),
+    )
+    checkpoint_path = tmp_path / "training_state.pt"
+    policy = ModularManagerPolicyNetwork()
+
+    def checkpoint_callback(generation, population, best_policy, metrics, rng):
+        save_cuda_training_state(
+            checkpoint_path,
+            generation=generation,
+            population=population,
+            best_policy=best_policy,
+            metrics=metrics,
+            rng_state=rng.getstate(),
+        )
+
+    _, first_metrics = train_cuda_policy_population(
+        policy,
+        [state],
+        population_size=2,
+        generations=1,
+        selection_count=1,
+        scenario_repeats=1,
+        enable_transactions=False,
+        seed=19,
+        checkpoint_callback=checkpoint_callback,
+    )
+    resume_state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    _, resumed_metrics = train_cuda_policy_population(
+        policy,
+        [state],
+        population_size=2,
+        generations=2,
+        selection_count=1,
+        scenario_repeats=1,
+        enable_transactions=False,
+        seed=19,
+        resume_state=resume_state,
+    )
+
+    assert len(first_metrics) == 1
+    assert len(resumed_metrics) == 2
+    assert resumed_metrics[0].generation == 1
+    assert resumed_metrics[1].generation == 2
