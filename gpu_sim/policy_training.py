@@ -621,6 +621,7 @@ def train_cuda_policy_population(
     scenario_bank: list[CudaSeasonState] | None = None,
     resume_state: dict | None = None,
     batch_population: bool = True,
+    exact_policy_head_parity: bool = True,
     self_play: bool = False,
     generation_callback=None,
     checkpoint_callback=None,
@@ -719,6 +720,7 @@ def train_cuda_policy_population(
                 seed=seed + generation * 1000,
                 draft_anchor_weight=draft_anchor_weight,
                 risk_penalty=risk_penalty,
+                exact_policy_head_parity=exact_policy_head_parity,
             )
         else:
             evaluations = [

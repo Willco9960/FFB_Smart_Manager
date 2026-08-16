@@ -16,3 +16,5 @@ Decision records preserve the reasoning behind choices that would be expensive o
 - [ADR-012: Optimize Petic GPH with cached scenario workers](0012-maximize-simulation-throughput.md)
 - [ADR-013: Isolate the CUDA simulator prototype behind a parity gate](0013-isolated-cuda-simulation-prototype.md)
 - [ADR-014: Shared transitions and pre-training gates](0014-shared-transition-and-pretraining-gates.md)
+- [ADR-015: Common-random, risk-aware, resumable CUDA evolution](0015-flagship-cuda-training-loop.md)
+- [ADR-016: Opt-in batched CUDA policy heads](0016-opt-in-batched-cuda-policy-heads.md)

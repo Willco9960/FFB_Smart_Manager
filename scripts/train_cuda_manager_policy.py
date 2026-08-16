@@ -48,6 +48,14 @@ def parse_args() -> argparse.Namespace:
         help="Use sequential policy evaluation for debugging or CPU parity.",
     )
     parser.add_argument(
+        "--batched-policy-heads",
+        action="store_true",
+        help=(
+            "Use the parity-tested flattened CUDA population route for all manager heads. "
+            "Without this flag, exact per-policy head evaluation remains the default."
+        ),
+    )
+    parser.add_argument(
         "--holdout-season",
         type=int,
         default=2025,
@@ -137,6 +145,15 @@ def main() -> None:
         f"generations={args.generations} repeats={args.scenario_repeats}",
         flush=True,
     )
+    print(
+        "Population routing: "
+        + (
+            "flattened CUDA policy heads"
+            if args.batched_policy_heads
+            else "exact per-policy heads"
+        ),
+        flush=True,
+    )
     print("Loading historical CUDA states...", flush=True)
     states = load_historical_states(args, device)
     holdout_state = load_holdout_state(args, device)
@@ -208,6 +225,7 @@ def main() -> None:
         risk_penalty=args.risk_penalty,
         compile_policy=args.compile_policy,
         batch_population=not args.disable_population_batching,
+        exact_policy_head_parity=not args.batched_policy_heads,
         resume_state=resume_state,
         generation_callback=on_generation,
         checkpoint_callback=lambda generation, population, best_policy, metrics, rng: (

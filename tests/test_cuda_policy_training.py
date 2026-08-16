@@ -199,3 +199,40 @@ def test_batched_population_evaluation_matches_sequential_evaluation():
         assert actual.fitness == expected.fitness
         assert actual.wins == expected.wins
         assert actual.points_for == expected.points_for
+
+
+def test_batched_population_transaction_heads_match_exact_evaluation():
+    state = create_synthetic_season_state(
+        scenarios=1,
+        players=160,
+        weeks=17,
+        device=torch.device("cpu"),
+    )
+    policies = [ModularManagerPolicyNetwork() for _ in range(2)]
+    scenario_bank = prepare_cuda_scenario_bank(
+        [state],
+        scenario_repeats=1,
+        projection_noise=0.0,
+        seed=11,
+    )
+    exact = evaluate_cuda_policy_population(
+        policies,
+        [state],
+        scenario_bank=scenario_bank,
+        enable_transactions=True,
+        exact_policy_head_parity=True,
+    )
+    batched = evaluate_cuda_policy_population(
+        policies,
+        [state],
+        scenario_bank=scenario_bank,
+        enable_transactions=True,
+        exact_policy_head_parity=False,
+    )
+
+    for expected, actual in zip(exact, batched, strict=True):
+        assert actual.fitness == expected.fitness
+        assert actual.wins == expected.wins
+        assert actual.points_for == expected.points_for
+        assert actual.playoff_rate == expected.playoff_rate
+        assert actual.championship_rate == expected.championship_rate

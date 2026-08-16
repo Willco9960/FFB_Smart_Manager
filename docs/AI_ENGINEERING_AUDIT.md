@@ -60,11 +60,11 @@ safe:
 | uncertainty-aware manager state | **Implemented** | floor/median/ceiling/boom outputs are normalized into the shared policy state and persisted in feature manifests |
 | manager-head pretraining and preflight | **Implemented** | behavior-cloning warm start covers draft, lineup, waiver, and trade heads; `run_training_preflight` requires all heads, data, contract, and finite-loss checks before long runs |
 
-The CUDA population evaluator intentionally falls back to the exact per-policy
-evaluator while all four state-conditioned heads are enabled. This is a
-correctness guard, not a hidden performance claim. The batched draft kernel
-remains available for benchmark work, but it is not used to rank flagship
-policies until a team-aware router has its own parity test.
+The CUDA population evaluator keeps exact per-policy head evaluation as its
+audit default. The flattened population route is available through
+`--batched-policy-heads` and now has a transaction-enabled parity test against
+the exact evaluator. It is an explicit throughput mode; promotion still
+requires the historical CPU/CUDA parity sweep and chronological holdout.
 
 New projection artifacts are produced with:
 
