@@ -15,7 +15,6 @@ from agents.waiver_agent import GenomeWaiverAgent
 from evolution.genome import create_random_genome
 from evolution.modular_behavior_cloning import (
     ModularImitationExample,
-    train_modular_behavior_policy,
 )
 from evolution.modular_policy_training import (
     ModularGenerationMetrics,
@@ -28,7 +27,9 @@ from evolution.offline_replay import (
     DecisionReplayRecord,
     train_offline_policy,
 )
+from evolution.pretraining import build_manager_teacher_examples, run_manager_pretraining
 from evolution.transaction_value_training import train_transaction_value_model_with_validation
+from fantasy_engine.data_availability import validate_training_seasons
 from fantasy_engine.draft import get_snake_draft_order, run_snake_draft
 from fantasy_engine.league import League
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
@@ -442,6 +443,8 @@ def main() -> None:
     started_at = datetime.now().astimezone()
     run_started = perf_counter()
     seasons = list(range(args.start_season, args.end_season + 1))
+    availability_seasons = sorted({value for season in seasons for value in (season - 1, season)})
+    data_manifests = validate_training_seasons(availability_seasons)
     report = {
         "status": "running",
         "started_at": started_at.isoformat(),
@@ -489,6 +492,7 @@ def main() -> None:
         },
         "stages": {},
         "generations": [],
+        "data_availability": [manifest.to_dict() for manifest in data_manifests],
     }
     write_json(args.report, report)
     print(f"Training started: {started_at.isoformat()}", flush=True)
@@ -508,21 +512,39 @@ def main() -> None:
             flush=True,
         )
     print(f"Report: {args.report}", flush=True)
+    missing_context = sorted(
+        {
+            column
+            for manifest in data_manifests
+            for column in manifest.missing_optional_columns
+        }
+    )
+    if missing_context:
+        print(
+            "Optional context feeds unavailable; features will remain explicitly masked: "
+            f"{', '.join(missing_context)}",
+            flush=True,
+        )
 
     try:
         model = ModularManagerPolicyNetwork()
         teacher = GenomeDraftAgent(create_random_genome(seed=2021))
 
         stage_started = perf_counter()
-        print("[Stage 1/4] Collecting behavioral draft examples...", flush=True)
+        print("[Stage 1/4] Collecting behavioral examples for all policy heads...", flush=True)
         first_league = create_training_league(args.start_season)
-        examples = collect_draft_examples(first_league, teacher)
-        imitation_loss = train_modular_behavior_policy(
-            model, examples, epochs=args.epochs, device=training_device
+        examples = build_manager_teacher_examples(first_league, episodes=1, rounds=args.rounds)
+        pretraining_result = run_manager_pretraining(
+            model,
+            examples,
+            behavior_epochs=args.epochs,
+            device=training_device,
         )
+        imitation_loss = pretraining_result.behavior_loss
         report["stages"]["behavior_cloning"] = {
             "examples": len(examples),
             "loss": imitation_loss,
+            "decision_type_counts": dict(pretraining_result.decision_type_counts),
             "elapsed_seconds": round(perf_counter() - stage_started, 2),
         }
         write_json(args.report, report)
@@ -538,7 +560,7 @@ def main() -> None:
                 DecisionReplayRecord(
                     season=args.start_season,
                     week=0,
-                    decision_type="draft",
+                    decision_type=example.decision_type,
                     action_key=str(index),
                     features=example.features,
                     reward=example.target_score,

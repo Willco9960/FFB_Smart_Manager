@@ -222,6 +222,22 @@ selects the RTX 3080 for batched behavior-cloning, replay, and transaction-value
 training, then moves the compact policy back to CPU before process-based
 simulation. Use `--training-device cpu` for a deterministic CPU-only diagnostic.
 
+### Run the pre-training gate before an expensive run
+
+This is the required fast check for a new data range or checkpoint:
+
+```powershell
+python -u -m scripts.run_training_preflight --start-season 2021 --end-season 2024 --device auto --output reports/training_preflight_2021_2024.json
+```
+
+The gate validates chronological source coverage, the fitness contract, all
+four manager heads, finite behavior-cloning loss, and a synthetic season pass.
+It exits nonzero when any check fails. To inspect the teacher warm start alone:
+
+```powershell
+python -u -m scripts.run_manager_pretraining_gate --season 2021 --device auto --behavior-epochs 2 --offline-epochs 1
+```
+
 ### Evaluate a modular policy on an unseen season
 
 Keep the holdout season outside the training range. For example, evaluate the

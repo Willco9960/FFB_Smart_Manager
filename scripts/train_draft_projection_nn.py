@@ -1,5 +1,6 @@
 import argparse
 
+from fantasy_engine.data_availability import validate_training_seasons
 from fantasy_engine.historical_seasons import EARLIEST_RELIABLE_SEASON
 from fantasy_engine.projection_dataset import get_feature_names, load_projection_examples
 from models.distributional_projection import (
@@ -54,6 +55,7 @@ def main():
         raise ValueError("Validation season must be before the test season.")
 
     target_seasons = training_seasons + [args.validation_season, args.test_season]
+    data_manifests = validate_training_seasons(target_seasons)
     examples = load_projection_examples(target_seasons)
     training_examples = [example for example in examples if example.season in training_seasons]
     validation_examples = [
@@ -69,6 +71,10 @@ def main():
     )
 
     print(f"Training device: {select_training_device()}")
+    print(
+        "Data availability checked for seasons: "
+        f"{tuple(manifest.season for manifest in data_manifests)}"
+    )
     print(f"Training seasons: {tuple(training_seasons)}")
     print(f"Validation season: {args.validation_season}")
     print(f"Test season: {args.test_season}")

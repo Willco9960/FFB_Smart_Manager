@@ -34,6 +34,10 @@ LEAGUE_STATE_FEATURE_NAMES = (
     "te_start_need",
     "flex_eligible_count",
     "bench_projected_points",
+    "projection_floor",
+    "projection_median",
+    "projection_ceiling",
+    "boom_probability",
 )
 
 
@@ -50,6 +54,10 @@ def create_league_state_features(
     opponent_strength: float = 0.0,
     standing_win_rate: float = 0.0,
     playoff_probability: float = 0.0,
+    projection_floor: float = 0.0,
+    projection_median: float = 0.0,
+    projection_ceiling: float = 0.0,
+    boom_probability: float = 0.0,
 ) -> tuple[float, ...]:
     """Create normalized state features for a team decision.
 
@@ -101,6 +109,10 @@ def create_league_state_features(
         *starter_needs,
         float(flex_eligible_count) / 16.0,
         bench_projected_points / 500.0,
+        projection_floor / 500.0,
+        projection_median / 500.0,
+        projection_ceiling / 500.0,
+        float(boom_probability),
     )
 
 

@@ -56,6 +56,23 @@ def test_modular_policy_has_specialized_heads():
     assert isinstance(model.estimate_value(features), float)
 
 
+def test_modular_policy_receives_distributional_projection_context():
+    team = Team(name="Team")
+    player = create_player("RB", "RB", 18.0)
+    features = create_modular_policy_features(
+        player,
+        team,
+        [player],
+        projection_floor=10.0,
+        projection_median=18.0,
+        projection_ceiling=31.0,
+        boom_probability=0.4,
+    )
+
+    assert features.state_values[-4:] == (0.02, 0.036, 0.062, 0.4)
+    assert isinstance(ModularManagerPolicyNetwork().score_draft_action(features), float)
+
+
 def test_modular_policy_can_be_saved_and_loaded(tmp_path: Path):
     path = tmp_path / "modular_policy.pt"
     model = ModularManagerPolicyNetwork()

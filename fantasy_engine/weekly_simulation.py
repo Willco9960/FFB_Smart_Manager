@@ -2,12 +2,14 @@ from dataclasses import replace
 
 from agents.neural_lineup_agent import LineupAgent
 from evolution.offline_replay import DecisionReplayRecord
+from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT
 from fantasy_engine.lineup import (
     ESPN_OFFENSIVE_LINEUP_RULES,
     LineupSlot,
     StartingLineup,
     build_best_starting_lineup,
 )
+from fantasy_engine.manager_transition import build_manager_state
 from fantasy_engine.player import Player
 from fantasy_engine.season import ScheduledMatchup, TeamStanding, record_matchup_result
 from fantasy_engine.team import Team
@@ -88,6 +90,7 @@ def score_adaptive_weekly_team(
     projection_service: WeeklyNeuralProjectionService | None = None,
     replay_records: list[DecisionReplayRecord] | None = None,
     season: int = 0,
+    contract_digest: str = ESPN_FITNESS_CONTRACT.digest(),
 ) -> tuple[StartingLineup, float]:
     weekly_points_by_player = get_weekly_points_by_player(performances, week)
     if projection_service is None:
@@ -103,6 +106,13 @@ def score_adaptive_weekly_team(
         lineup_agent,
     )
     if replay_records is not None:
+        state = build_manager_state(
+            projected_team,
+            projected_roster,
+            season=season,
+            week=week,
+            contract_digest=contract_digest,
+        )
         for player in starting_lineup.players:
             replay_records.append(
                 DecisionReplayRecord(
@@ -119,6 +129,8 @@ def score_adaptive_weekly_team(
                     reward=player.actual_score,
                     team_name=team.name,
                     source="historical_lineup",
+                    state_digest=state.digest(),
+                    contract_digest=contract_digest,
                 )
             )
 
@@ -136,6 +148,7 @@ def simulate_historical_week(
     projection_service: WeeklyNeuralProjectionService | None = None,
     replay_records: list[DecisionReplayRecord] | None = None,
     season: int = 0,
+    contract_digest: str = ESPN_FITNESS_CONTRACT.digest(),
 ) -> dict[str, float]:
     teams_by_name = {team.name: team for team in teams}
     weekly_scores = {}
@@ -155,6 +168,7 @@ def simulate_historical_week(
             projection_service,
             replay_records,
             season,
+            contract_digest,
         )
         _, second_team_score = score_adaptive_weekly_team(
             second_team,
@@ -165,6 +179,7 @@ def simulate_historical_week(
             projection_service,
             replay_records,
             season,
+            contract_digest,
         )
         weekly_scores[first_team.name] = first_team_score
         weekly_scores[second_team.name] = second_team_score

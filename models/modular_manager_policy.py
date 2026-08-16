@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from models.feature_manifest import create_feature_manifest, validate_checkpoint_manifest
 from models.league_state_encoder import LEAGUE_STATE_FEATURE_NAMES, create_league_state_features
 from models.manager_policy_nn import MANAGER_FEATURE_COUNT, create_draft_action_features
 
@@ -28,6 +29,10 @@ def create_modular_policy_features(
     opponent_strength: float = 0.0,
     standing_win_rate: float = 0.0,
     playoff_probability: float = 0.0,
+    projection_floor: float = 0.0,
+    projection_median: float = 0.0,
+    projection_ceiling: float = 0.0,
+    boom_probability: float = 0.0,
 ) -> ModularPolicyFeatures:
     """Adapt existing action features into the shared modular representation."""
 
@@ -45,6 +50,10 @@ def create_modular_policy_features(
             opponent_strength=opponent_strength,
             standing_win_rate=standing_win_rate,
             playoff_probability=playoff_probability,
+            projection_floor=projection_floor,
+            projection_median=projection_median,
+            projection_ceiling=projection_ceiling,
+            boom_probability=boom_probability,
         ),
     )
 
@@ -210,6 +219,10 @@ def save_modular_policy_network(
     output_path: Path = MODULAR_POLICY_PATH,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = create_feature_manifest(
+        feature_names=tuple(LEAGUE_STATE_FEATURE_NAMES),
+        decision_cutoff="pre-decision",
+    )
     torch.save(
         {
             "player_feature_count": model.player_feature_count,
@@ -217,6 +230,8 @@ def save_modular_policy_network(
             "hidden_size": model.hidden_size,
             "state_dict": model.state_dict(),
             "decision_types": list(DECISION_TYPES),
+            "feature_manifest": manifest.to_dict(),
+            "feature_manifest_digest": manifest.digest(),
         },
         output_path,
     )
@@ -227,6 +242,8 @@ def load_modular_policy_network(
     model_path: Path = MODULAR_POLICY_PATH,
 ) -> ModularManagerPolicyNetwork:
     checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+    if "feature_manifest" in checkpoint:
+        validate_checkpoint_manifest(checkpoint)
     model = ModularManagerPolicyNetwork(
         player_feature_count=int(checkpoint["player_feature_count"]),
         state_feature_count=int(checkpoint["state_feature_count"]),

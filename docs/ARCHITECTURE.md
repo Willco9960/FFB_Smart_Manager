@@ -52,6 +52,19 @@ At each simulated decision point:
 7. Apply actual historical outcomes only after the decision.
 8. Attribute downstream value to the original action in replay reports.
 
+The serialized boundary for those steps is `fantasy_engine.manager_transition`:
+
+```text
+ManagerState + LegalActionMask
+        -> ManagerAction
+        -> ManagerTransition
+        -> next ManagerState + replay digest
+```
+
+The contract digest travels with CPU replay records and CUDA season state. This
+prevents a backend from silently using different lineup, waiver, trade, or
+playoff semantics.
+
 ## Training flow
 
 ```text
@@ -76,6 +89,12 @@ Historical seasons
 
 Historical scenario evaluation is process-parallel because the dominant work is Python draft, lineup, waiver, trade, and matchup simulation rather than large neural tensor batches. Persistent workers cache the historical scenario library once and receive only policy payloads plus scenario indices on later generations, avoiding repeated season-data serialization. Each worker returns results aligned to the original agent order, and `--evaluation-workers` bounds CPU and memory usage. Generation telemetry reports Petic GPH (generations per hour).
 
+Training input validation is fail-closed. `DataAvailabilityManifest` records
+source path, row count, per-column coverage, and absent optional context. Core
+identity/time columns must be present with at least 99% observed coverage (the
+small allowance covers documented blank nflverse stat rows); optional injury,
+market, and matchup context is masked when unavailable.
+
 The opt-in island trainer adds a second parallelism strategy. Independent
 populations run bounded generation segments in separate processes. A segment
 barrier exchanges elite policies in a ring before the next segment begins. This
@@ -88,6 +107,13 @@ All modular policies must be checked with a chronological holdout evaluator
 before selection. The holdout path uses the same leakage-safe season loader and
 reports weekly wins, points for, playoff rate, championship rate, and
 transaction reward.
+
+The initial policy is warm-started with transparent teacher examples for all
+four manager heads. `evolution.pretraining` produces draft, lineup, waiver, and
+trade examples from pre-decision projections only; `scripts.run_training_preflight`
+verifies that every head has examples, the contract is valid, the pretraining
+loss is finite, and a policy can traverse a synthetic season before a long run
+is allowed.
 
 Pretraining follows a hybrid device plan: CUDA handles contiguous tensor
 batches, while the Python-heavy simulator remains on bounded CPU workers. The

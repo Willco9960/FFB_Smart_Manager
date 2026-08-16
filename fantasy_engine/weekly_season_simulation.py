@@ -4,8 +4,10 @@ from agents.neural_lineup_agent import LineupAgent
 from agents.trade_agent import TradeAgent
 from agents.waiver_agent import WaiverAgent
 from evolution.offline_replay import DecisionReplayRecord
+from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT, FitnessContract
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
+from fantasy_engine.manager_transition import build_manager_state
 from fantasy_engine.season import (
     ESPN_TEN_TEAM_DEFAULT_RULES,
     ESPNLeagueRules,
@@ -57,6 +59,7 @@ def run_historical_regular_season(
     lineup_agents: dict[str, LineupAgent] | None = None,
     projection_service: WeeklyNeuralProjectionService | None = None,
     season: int = 0,
+    fitness_contract: FitnessContract = ESPN_FITNESS_CONTRACT,
 ) -> RegularSeasonSimulationResult:
     team_names = [team.name for team in league.teams]
     schedule = create_regular_season_schedule(team_names, rules)
@@ -78,6 +81,7 @@ def run_historical_regular_season(
             projection_service=projection_service,
             replay_records=decision_replay_records,
             season=season,
+            contract_digest=fitness_contract.digest(),
         )
         weekly_transactions[week].extend(
             run_weekly_waivers(
@@ -89,6 +93,7 @@ def run_historical_regular_season(
                 projection_service=projection_service,
                 replay_records=decision_replay_records,
                 season=season,
+                contract_digest=fitness_contract.digest(),
             )
         )
         transaction_tracker.register(weekly_transactions[week])
@@ -103,6 +108,7 @@ def run_historical_regular_season(
             projection_service=projection_service,
             replay_records=decision_replay_records,
             season=season,
+            contract_digest=fitness_contract.digest(),
         )
         weekly_points_by_player = {}
         for performance in performances:
@@ -174,6 +180,7 @@ def run_weekly_waivers(
     projection_service: WeeklyNeuralProjectionService | None = None,
     replay_records: list[DecisionReplayRecord] | None = None,
     season: int = 0,
+    contract_digest: str = ESPN_FITNESS_CONTRACT.digest(),
 ) -> list[Transaction]:
     if waiver_agents is None:
         return []
@@ -221,6 +228,13 @@ def run_weekly_waivers(
             continue
 
         if replay_records is not None:
+            state = build_manager_state(
+                projected_team,
+                projected_available_players,
+                season=season,
+                week=week,
+                contract_digest=contract_digest,
+            )
             replay_records.append(
                 DecisionReplayRecord(
                     season=season,
@@ -237,6 +251,8 @@ def run_weekly_waivers(
                     team_name=team.name,
                     source="historical_waiver",
                     executed=False,
+                    state_digest=state.digest(),
+                    contract_digest=contract_digest,
                 )
             )
 
@@ -298,6 +314,7 @@ def run_weekly_trades(
     projection_service: WeeklyNeuralProjectionService | None = None,
     replay_records: list[DecisionReplayRecord] | None = None,
     season: int = 0,
+    contract_digest: str = ESPN_FITNESS_CONTRACT.digest(),
 ) -> list[Transaction]:
     if trade_agents is None:
         return []
@@ -351,6 +368,16 @@ def run_weekly_trades(
             continue
 
         if replay_records is not None:
+            proposing_state = build_manager_state(
+                projected_team,
+                projected_team.roster,
+                season=season,
+                week=week,
+                opponent_rosters={
+                    other.name: other.roster for other in projected_teams if other.name != team_name
+                },
+                contract_digest=contract_digest,
+            )
             requested_key = ",".join(player.name for player in projected_proposal.requested_players)
             offered_key = ",".join(player.name for player in projected_proposal.offered_players)
             replay_records.extend(
@@ -370,6 +397,8 @@ def run_weekly_trades(
                         team_name=team_name,
                         source="historical_trade",
                         executed=False,
+                        state_digest=proposing_state.digest(),
+                        contract_digest=contract_digest,
                     ),
                     DecisionReplayRecord(
                         season=season,
@@ -386,6 +415,8 @@ def run_weekly_trades(
                         team_name=projected_proposal.receiving_team_name,
                         source="historical_trade",
                         executed=False,
+                        state_digest=proposing_state.digest(),
+                        contract_digest=contract_digest,
                     ),
                 ]
             )

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from fantasy_engine.fitness_contract import FitnessContract
+from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT, FitnessContract
 from gpu_sim.policy_draft import _build_player_features, run_batched_policy_draft
 from gpu_sim.tensorized_draft import (
     DraftBatchResult,
@@ -49,9 +49,14 @@ class CudaSeasonState:
     trade_policy_gains: list[torch.Tensor] = field(default_factory=list)
     active_policy_network: torch.nn.Module | None = field(default=None, repr=False)
     active_team_policy_networks: list[torch.nn.Module] | None = field(default=None, repr=False)
+    draft_floors: torch.Tensor | None = None
+    draft_medians: torch.Tensor | None = None
+    draft_ceilings: torch.Tensor | None = None
+    draft_boom_probabilities: torch.Tensor | None = None
     lineup_position_rules: tuple[tuple[int, ...], ...] = (
         (0,), (1,), (1,), (2,), (2,), (3,), (1, 2, 3)
     )
+    contract_digest: str = ESPN_FITNESS_CONTRACT.digest()
 
     def _score_batched_lineups(
         self,
@@ -87,6 +92,15 @@ class CudaSeasonState:
             raise ValueError("All tensors must share player count.")
         if self.positions.shape != (self.draft_projections.shape[1],):
             raise ValueError("positions must describe every player.")
+        for name in (
+            "draft_floors",
+            "draft_medians",
+            "draft_ceilings",
+            "draft_boom_probabilities",
+        ):
+            values = getattr(self, name)
+            if values is not None and values.shape != self.draft_projections.shape:
+                raise ValueError(f"{name} must match draft_projections shape.")
         if self.team_count < 2 or self.roster_size < 1:
             raise ValueError("team_count and roster_size must be positive.")
         if self.rosters is None:
@@ -224,6 +238,10 @@ class CudaSeasonState:
             available=available,
             rosters=rosters,
             team_index=team_index,
+            projection_floors=self.draft_floors,
+            projection_medians=self.draft_medians,
+            projection_ceilings=self.draft_ceilings,
+            boom_probabilities=self.draft_boom_probabilities,
         )
         with torch.inference_mode():
             scores = policy_network(
@@ -777,6 +795,12 @@ def run_full_cuda_season(
     """
 
     if fitness_contract is not None:
+        expected_contract_digest = fitness_contract.digest()
+        if state.contract_digest not in ("", expected_contract_digest):
+            raise ValueError(
+                "CUDA state fitness contract does not match the requested contract."
+            )
+        state.contract_digest = expected_contract_digest
         position_ids = {
             "QB": 0,
             "RB": 1,

@@ -23,7 +23,11 @@ class DecisionReplayRecord:
     team_name: str = ""
     source: str = "historical"
     executed: bool = True
-    executed: bool = True
+    state_digest: str = ""
+    action_mask_digest: str = ""
+    next_state_digest: str = ""
+    contract_digest: str = ""
+    transition_digest: str = ""
 
     def __post_init__(self) -> None:
         if self.decision_type not in DECISION_TYPES:

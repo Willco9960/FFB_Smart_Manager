@@ -96,6 +96,25 @@ def clone_cuda_state(
         positions=state.positions,
         team_count=state.team_count,
         roster_size=state.roster_size,
+        contract_digest=state.contract_digest,
+        draft_floors=(
+            None
+            if state.draft_floors is None
+            else state.draft_floors.repeat(scenario_repeats, 1)
+        ),
+        draft_medians=(
+            None
+            if state.draft_medians is None
+            else state.draft_medians.repeat(scenario_repeats, 1)
+        ),
+        draft_ceilings=(
+            None
+            if state.draft_ceilings is None
+            else state.draft_ceilings.repeat(scenario_repeats, 1)
+        ),
+        draft_boom_probabilities=None
+        if state.draft_boom_probabilities is None
+        else state.draft_boom_probabilities.repeat(scenario_repeats, 1),
     )
 
 
@@ -109,6 +128,13 @@ def fork_cuda_state(state: CudaSeasonState) -> CudaSeasonState:
         positions=state.positions,
         team_count=state.team_count,
         roster_size=state.roster_size,
+        contract_digest=state.contract_digest,
+        draft_floors=None if state.draft_floors is None else state.draft_floors.clone(),
+        draft_medians=None if state.draft_medians is None else state.draft_medians.clone(),
+        draft_ceilings=None if state.draft_ceilings is None else state.draft_ceilings.clone(),
+        draft_boom_probabilities=None
+        if state.draft_boom_probabilities is None
+        else state.draft_boom_probabilities.clone(),
     )
 
 

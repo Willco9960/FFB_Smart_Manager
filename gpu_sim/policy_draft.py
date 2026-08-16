@@ -49,8 +49,12 @@ def _build_player_features(
     available: torch.Tensor,
     rosters: torch.Tensor,
     team_index: int,
+    projection_floors: torch.Tensor | None = None,
+    projection_medians: torch.Tensor | None = None,
+    projection_ceilings: torch.Tensor | None = None,
+    boom_probabilities: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build the 14+25 feature tensors used by ModularManagerPolicyNetwork."""
+    """Build the 14+29 feature tensors used by ModularManagerPolicyNetwork."""
 
     scenarios, player_count = projected_points.shape
     feature_positions = positions.clamp_max(3)
@@ -164,6 +168,21 @@ def _build_player_features(
         dim=1,
     )
     state_features = state_values.unsqueeze(1).expand(-1, player_count, -1)
+    def _candidate_context(values: torch.Tensor | None) -> torch.Tensor:
+        if values is None:
+            return torch.zeros_like(projected_points)
+        return values
+
+    state_features = torch.cat(
+        (
+            state_features,
+            (_candidate_context(projection_floors) / 500.0).unsqueeze(-1),
+            (_candidate_context(projection_medians) / 500.0).unsqueeze(-1),
+            (_candidate_context(projection_ceilings) / 500.0).unsqueeze(-1),
+            _candidate_context(boom_probabilities).unsqueeze(-1),
+        ),
+        dim=2,
+    )
     return player_features, state_features
 
 
@@ -236,6 +255,10 @@ def run_batched_policy_draft(
                 available=available,
                 rosters=rosters,
                 team_index=team_index,
+                projection_floors=None,
+                projection_medians=None,
+                projection_ceilings=None,
+                boom_probabilities=None,
             )
             flat_player = player_features.reshape(-1, player_features.shape[-1])
             flat_state = state_features.reshape(-1, state_features.shape[-1])

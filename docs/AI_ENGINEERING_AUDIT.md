@@ -1,7 +1,7 @@
 # AI Engineering Audit
 
 **Review date:** 2026-08-16  
-**Reviewed revision:** `4155e37`  
+**Reviewed revision:** `3824253`
 **Scope:** projections, manager policies, CPU simulator, CUDA simulator,
 evolution, historical data, evaluation, and reproducibility.
 
@@ -13,11 +13,12 @@ holdouts are documented, long runs are resumable, and the CUDA path now has
 population batching, common random numbers, risk-aware selection, and parity
 tests.
 
-The current CUDA flagship is **not yet a complete neural fantasy manager**.
-It trains the draft head while CUDA lineups, waivers, and trades use
-tensorized baseline heuristics. Its opponents are projection-best baselines,
-not independently learning managers. The largest risk is therefore optimizing
-a simplified objective and mistaking simulator progress for real manager skill.
+The current CUDA flagship now exposes all four manager heads (draft, lineup,
+waiver, and trade), uncertainty-aware state, and a preflight gate. It is still
+not a proven winning manager: transaction action parity between independent
+CPU/CUDA policies is diagnostic, and opponents/holdouts must continue to be
+measured rather than assumed. The largest remaining risk is optimizing a
+simplified objective and mistaking simulator progress for real manager skill.
 
 The correct order is:
 
@@ -53,6 +54,11 @@ safe:
 | stable transaction attribution | **Implemented** | Waiver/trade impacts prefer stable player IDs and retain legacy name fallbacks |
 | full-rule parity harness | **Implemented** | Historical comparison uses the same drafted rosters for CPU/CUDA scoring and reports weekly-score deltas, standings/champion parity, and transaction-count deltas |
 | K/DST and irregular-rule contract | **Implemented** | Contract now versions starter counts, K/DST, tie-breaker, waiver order, trade format, and postponed-game policy; CUDA draft reserves K/DST slots |
+| shared state/action/transition contract | **Implemented** | `fantasy_engine.manager_transition` serializes the pre-decision state, legal action mask, action, next state, and contract digest for CPU/CUDA/replay consumers |
+| transaction action parity | **Implemented with explicit scope** | `gpu_sim.transaction_parity` applies identical waiver/trade fixtures to CPU and CUDA state; dynamic neural transaction policies remain diagnostic until their action selection is identical |
+| strict data availability gate | **Implemented** | `DataAvailabilityManifest` validates core schema, row coverage, source path, optional-context gaps, and chronological training seasons before projection or manager training |
+| uncertainty-aware manager state | **Implemented** | floor/median/ceiling/boom outputs are normalized into the shared policy state and persisted in feature manifests |
+| manager-head pretraining and preflight | **Implemented** | behavior-cloning warm start covers draft, lineup, waiver, and trade heads; `run_training_preflight` requires all heads, data, contract, and finite-loss checks before long runs |
 
 The CUDA population evaluator intentionally falls back to the exact per-policy
 evaluator while all four state-conditioned heads are enabled. This is a
@@ -76,7 +82,7 @@ The remediation pass was verified on 2026-08-16 with:
 
 ```text
 python -m ruff check .       -> All checks passed
-python -m pytest -q          -> 299 passed
+python -m pytest -q          -> 308 passed
 compare_cpu_cuda_historical_season --season 2021 --players 256 --device cpu
                               -> full ESPN lineup/K/DST path completed;
                                  standings/champion/weekly scores exact,
@@ -90,6 +96,21 @@ historical source/ordering discrepancy from being promoted as â€œexact parity.â€
 The CPU transaction replay remains the promotion authority until transaction
 action-level parity reaches zero delta. The committed smoke uses
 `transactions=false`; transaction-enabled parity remains an explicit gate.
+
+The explicit fixture parity gate is deliberately separate from the dynamic
+transaction comparison. It verifies that the two backends execute the same
+legal waiver/trade action sequence and preserve stable player ownership. The
+dynamic comparison still reports differences rather than claiming parity when
+neural policies choose different actions.
+
+The current pre-training gate was additionally verified with:
+
+```text
+python -m scripts.run_training_preflight --start-season 2021 --end-season 2024 --device cpu
+                              -> approved=True; 5 chronological data seasons checked;
+                                 finite all-head pretraining loss 0.160442
+python -m pytest -q          -> 308 passed
+```
 
 ## What is done well
 
@@ -107,6 +128,11 @@ rules.
 lineup, waiver, and trade information boundaries. The weekly feature builder
 filters prior weeks for recent and defensive signals. Chronological validation
 and unseen holdouts are preferred throughout the repository.
+
+`fantasy_engine/data_availability.py` now makes this operational: every season
+used for projections or manager training must pass the real-source schema and
+coverage gate. Optional injury, betting, and matchup columns are recorded as
+missing rather than fabricated, so policies can mask unavailable context.
 
 ### Useful CPU research instrumentation
 
@@ -127,6 +153,16 @@ The current CUDA trainer includes:
 - full population resume checkpoints;
 - a sequential debugging fallback;
 - CUDA-focused parity tests.
+
+The CUDA and CPU paths share `ManagerState`, `LegalActionMask`,
+`ManagerAction`, and `ManagerTransition` digests. Distributional projection
+context (floor, median, ceiling, and boom probability) is part of that state,
+not an out-of-band diagnostic.
+
+Before a long run, `scripts.run_training_preflight` runs the chronological data
+gate, all-head teacher pretraining, contract checks, and a synthetic policy
+simulation. A failed preflight is a hard stop for promotion; it is cheaper to
+reject a bad checkpoint before spending overnight simulation time.
 
 The measured smoke result was approximately 1,320 generations/hour batched
 versus 357 generations/hour sequential on the same small workload. That is a
