@@ -95,7 +95,10 @@ The CUDA trainer uses leakage-safe historical seasons, puts one neural policy
 against nine projection-best opponents, rotates the candidate's draft slot,
 and evolves policy weights with crossover and mutation. CUDA waivers and trades
 remain enabled in the season fitness loop; their tensorized actions are tracked
-as an optimization path and are still compared with the CPU reference.
+as an optimization path and are still compared with the CPU reference. On CUDA,
+the default path evaluates the entire population in one `torch.func.vmap`
+ensemble batch and ranks candidates with common randomized scenarios plus a
+risk-adjusted score.
 
 Smoke test:
 
@@ -103,15 +106,25 @@ Smoke test:
 python -u -m scripts.train_cuda_manager_policy --device cuda --start-season 2021 --end-season 2021 --population 4 --generations 2 --selection 2 --scenario-repeats 4 2>&1 | Tee-Object -FilePath logs/cuda_manager_smoke.log
 ```
 
-Overnight profile:
+Flagship overnight profile:
 
 ```powershell
-python -u -m scripts.train_cuda_manager_policy --device cuda --start-season 2001 --end-season 2024 --population 16 --generations 100 --selection 4 --scenario-repeats 8 --loader-workers 4 --projection-noise 0.015 2>&1 | Tee-Object -FilePath logs/cuda_manager_overnight.log
+python -u -m scripts.train_cuda_manager_policy --device cuda --start-season 2001 --end-season 2024 --population 10 --generations 150 --selection 4 --scenario-repeats 2 --loader-workers 4 --projection-noise 0.015 --draft-anchor-weight 0.20 --risk-penalty 0.10 --holdout-season 2025 --output data/models/cuda_manager_policy_flagship.pt --checkpoint data/models/cuda_manager_training_state_flagship.pt --report reports/cuda_manager_flagship.json 2>&1 | Tee-Object -FilePath logs/cuda_manager_flagship.log
 ```
 
-The policy checkpoint is written after every generation to
-`data/models/cuda_manager_policy.pt`; progress is written to
-`reports/cuda_manager_training.json`.
+The best-policy checkpoint is written after every generation to the configured
+`--output`; the full population/RNG resume checkpoint is written to
+`--checkpoint`; progress and the 2025 audit are written to `--report`.
+
+If the process stops, resume from the last completed generation:
+
+```powershell
+python -u -m scripts.train_cuda_manager_policy --device cuda --start-season 2001 --end-season 2024 --population 10 --generations 150 --selection 4 --scenario-repeats 2 --loader-workers 4 --projection-noise 0.015 --draft-anchor-weight 0.20 --risk-penalty 0.10 --holdout-season 2025 --resume data/models/cuda_manager_training_state_flagship.pt --output data/models/cuda_manager_policy_flagship.pt --checkpoint data/models/cuda_manager_training_state_flagship.pt --report reports/cuda_manager_flagship.json 2>&1 | Tee-Object -FilePath logs/cuda_manager_flagship_resume.log
+```
+
+Do not pass `--compile-policy` on this Windows installation unless a working
+Triton runtime has been installed; the trainer detects its absence and safely
+falls back to eager CUDA.
 
 Run a real historical CPU/CUDA parity sweep:
 

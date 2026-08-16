@@ -17,6 +17,7 @@ from pathlib import Path
 from time import perf_counter
 
 import torch
+from torch.func import functional_call, vmap
 
 from gpu_sim.full_season import CudaSeasonState, run_full_cuda_season
 from models.modular_manager_policy import ModularManagerPolicyNetwork
@@ -152,6 +153,60 @@ def _candidate_fitness(
     return fitness, wins, points_for, playoff_qualified, champion
 
 
+class CudaPolicyEnsemble(torch.nn.Module):
+    """Functional, parameter-batched view of a policy population."""
+
+    def __init__(self, policies: list[ModularManagerPolicyNetwork]):
+        if not policies:
+            raise ValueError("At least one policy is required.")
+        super().__init__()
+        self.population_size = len(policies)
+        self.template = copy.deepcopy(policies[0]).eval()
+        first_parameters = dict(policies[0].named_parameters())
+        self.stacked_parameters = {
+            name: torch.stack(
+                [dict(policy.named_parameters())[name] for policy in policies],
+                dim=0,
+            )
+            for name in first_parameters
+        }
+        self.stacked_buffers = {
+            name: torch.stack(
+                [dict(policy.named_buffers())[name] for policy in policies],
+                dim=0,
+            )
+            for name in dict(policies[0].named_buffers())
+        }
+
+    def forward(
+        self,
+        player_features: torch.Tensor,
+        state_features: torch.Tensor,
+        decision_type: str = "draft",
+    ) -> torch.Tensor:
+        if player_features.shape[0] % self.population_size != 0:
+            raise ValueError("Batched policy rows must divide evenly by population size.")
+        rows_per_policy = player_features.shape[0] // self.population_size
+        player_batches = player_features.reshape(self.population_size, rows_per_policy, -1)
+        state_batches = state_features.reshape(self.population_size, rows_per_policy, -1)
+
+        def apply_policy(parameters, buffers, player, state):
+            return functional_call(
+                self.template,
+                (parameters, buffers),
+                (player, state),
+                {"decision_type": decision_type},
+            )
+
+        outputs = vmap(apply_policy, in_dims=(0, 0, 0, 0))(
+            self.stacked_parameters,
+            self.stacked_buffers,
+            player_batches,
+            state_batches,
+        )
+        return outputs.reshape(-1)
+
+
 @torch.inference_mode()
 def evaluate_cuda_policy(
     policy: ModularManagerPolicyNetwork,
@@ -236,6 +291,97 @@ def evaluate_cuda_policy(
     )
 
 
+@torch.inference_mode()
+def evaluate_cuda_policy_population(
+    policies: list[ModularManagerPolicyNetwork],
+    historical_states: list[CudaSeasonState],
+    *,
+    scenario_bank: list[CudaSeasonState] | None = None,
+    scenario_repeats: int = 8,
+    projection_noise: float = 0.015,
+    enable_transactions: bool = True,
+    seed: int = 1,
+    draft_anchor_weight: float = 0.20,
+    risk_penalty: float = 0.10,
+) -> list[CudaPolicyEvaluation]:
+    """Evaluate all policies in one flattened CUDA scenario batch."""
+
+    if not policies:
+        raise ValueError("At least one policy is required.")
+    if not historical_states:
+        raise ValueError("At least one historical state is required.")
+    if scenario_bank is None:
+        scenario_bank = prepare_cuda_scenario_bank(
+            historical_states,
+            scenario_repeats=scenario_repeats,
+            projection_noise=projection_noise,
+            seed=seed,
+        )
+    device = scenario_bank[0].device
+    ensemble = CudaPolicyEnsemble(policies).to(device)
+    population_size = len(policies)
+    season_fitness: list[list[torch.Tensor]] = [[] for _ in policies]
+    season_wins: list[list[torch.Tensor]] = [[] for _ in policies]
+    season_points: list[list[torch.Tensor]] = [[] for _ in policies]
+    season_playoffs: list[list[torch.Tensor]] = [[] for _ in policies]
+    season_champions: list[list[torch.Tensor]] = [[] for _ in policies]
+    started = perf_counter()
+
+    for template in scenario_bank:
+        scenarios = template.scenario_count
+        state = CudaSeasonState(
+            draft_projections=template.draft_projections.repeat(population_size, 1),
+            weekly_projections=template.weekly_projections.repeat(population_size, 1, 1),
+            weekly_actual_points=template.weekly_actual_points.repeat(population_size, 1, 1),
+            positions=template.positions,
+            team_count=template.team_count,
+            roster_size=template.roster_size,
+        )
+        candidate_team_indices = (
+            torch.arange(scenarios, device=device) % state.team_count
+        ).repeat(population_size)
+        run_full_cuda_season(
+            state,
+            enable_transactions=enable_transactions,
+            policy_network=ensemble,
+            policy_team_indices=candidate_team_indices,
+            draft_anchor_weight=draft_anchor_weight,
+        )
+        fitness, wins, points_for, playoff, champion = _candidate_fitness(
+            state,
+            candidate_team_indices,
+        )
+        for policy_index in range(population_size):
+            window = slice(policy_index * scenarios, (policy_index + 1) * scenarios)
+            season_fitness[policy_index].append(fitness[window].mean())
+            season_wins[policy_index].append(wins[window].mean())
+            season_points[policy_index].append(points_for[window].mean())
+            season_playoffs[policy_index].append(playoff[window].to(torch.float32).mean())
+            season_champions[policy_index].append(champion[window].mean())
+
+    elapsed = perf_counter() - started
+    evaluations = []
+    for policy_index in range(population_size):
+        fitness_tensor = torch.stack(season_fitness[policy_index])
+        fitness = float(fitness_tensor.mean().item())
+        fitness_stddev = float(fitness_tensor.std(unbiased=False).item())
+        evaluations.append(
+            CudaPolicyEvaluation(
+                fitness=fitness,
+                fitness_stddev=fitness_stddev,
+                risk_adjusted_fitness=fitness - risk_penalty * fitness_stddev,
+                wins=float(torch.stack(season_wins[policy_index]).mean().item()),
+                points_for=float(torch.stack(season_points[policy_index]).mean().item()),
+                playoff_rate=float(torch.stack(season_playoffs[policy_index]).mean().item()),
+                championship_rate=float(
+                    torch.stack(season_champions[policy_index]).mean().item()
+                ),
+                elapsed_seconds=elapsed / population_size,
+            )
+        )
+    return evaluations
+
+
 def clone_policy(policy: ModularManagerPolicyNetwork) -> ModularManagerPolicyNetwork:
     return copy.deepcopy(policy)
 
@@ -266,6 +412,10 @@ def save_cuda_training_state(
             "best_policy": _cpu_state_dict(best_policy),
             "metrics": [metric.to_dict() for metric in metrics],
             "rng_state": rng_state,
+            "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_state_all": (
+                torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+            ),
         },
         output_path,
     )
@@ -320,6 +470,7 @@ def train_cuda_policy_population(
     compile_policy: bool = False,
     scenario_bank: list[CudaSeasonState] | None = None,
     resume_state: dict | None = None,
+    batch_population: bool = True,
     generation_callback=None,
     checkpoint_callback=None,
 ) -> tuple[ModularManagerPolicyNetwork, list[CudaGenerationMetrics]]:
@@ -328,6 +479,8 @@ def train_cuda_policy_population(
     if selection_count < 1 or selection_count > population_size:
         raise ValueError("selection_count must be between one and population_size.")
     rng = random.Random(seed)
+    if resume_state is None:
+        torch.manual_seed(seed)
     if scenario_bank is None:
         scenario_bank = prepare_cuda_scenario_bank(
             historical_states,
@@ -356,29 +509,49 @@ def train_cuda_policy_population(
         if metrics:
             best_risk_adjusted = max(item.best_risk_adjusted_fitness for item in metrics)
         rng.setstate(resume_state["rng_state"])
+        if "torch_rng_state" in resume_state:
+            torch.set_rng_state(resume_state["torch_rng_state"])
+        if (
+            torch.cuda.is_available()
+            and resume_state.get("cuda_rng_state_all") is not None
+        ):
+            torch.cuda.set_rng_state_all(resume_state["cuda_rng_state_all"])
         if len(population) != population_size:
             raise ValueError("Resume checkpoint population size does not match population_size.")
     started = perf_counter()
 
     for generation in range(start_generation, generations + 1):
-        evaluations = [
-            evaluate_cuda_policy(
-                policy,
+        if batch_population and next(population[0].parameters()).device.type == "cuda":
+            evaluations = evaluate_cuda_policy_population(
+                population,
                 historical_states,
+                scenario_bank=scenario_bank,
                 scenario_repeats=scenario_repeats,
                 projection_noise=projection_noise,
                 enable_transactions=enable_transactions,
-                # Common random numbers: every policy sees identical scenario
-                # noise and rotating draft slots, so ranking reflects policy
-                # decisions rather than an accidental easier draw.
                 seed=seed + generation * 1000,
                 draft_anchor_weight=draft_anchor_weight,
                 risk_penalty=risk_penalty,
-                compile_policy=compile_policy,
-                scenario_bank=scenario_bank,
             )
-            for index, policy in enumerate(population)
-        ]
+        else:
+            evaluations = [
+                evaluate_cuda_policy(
+                    policy,
+                    historical_states,
+                    scenario_repeats=scenario_repeats,
+                    projection_noise=projection_noise,
+                    enable_transactions=enable_transactions,
+                    # Common random numbers: every policy sees identical scenario
+                    # noise and rotating draft slots, so ranking reflects policy
+                    # decisions rather than an accidental easier draw.
+                    seed=seed + generation * 1000,
+                    draft_anchor_weight=draft_anchor_weight,
+                    risk_penalty=risk_penalty,
+                    compile_policy=compile_policy,
+                    scenario_bank=scenario_bank,
+                )
+                for policy in population
+            ]
         ranked = sorted(
             zip(evaluations, population, strict=True),
             key=lambda item: item[0].risk_adjusted_fitness,

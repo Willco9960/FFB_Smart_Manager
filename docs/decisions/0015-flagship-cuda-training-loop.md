@@ -26,6 +26,8 @@ The flagship CUDA training path will:
 - resume from that checkpoint with `--resume`;
 - compute positional ranks with argsort/scatter instead of a dense pairwise
   player-by-player comparison;
+- evaluate the population with a `torch.func.vmap` functional ensemble on
+  CUDA, with sequential evaluation retained as a debug fallback;
 - retain eager CUDA as the default when `torch.compile` cannot find Triton.
 
 ## Alternatives considered
@@ -52,6 +54,13 @@ lower memory traffic.
 Rejected for this Windows environment because the installed PyTorch build does
 not include a working Triton runtime. Eager CUDA with AMP and TF32 is the
 portable production path; compilation remains an optional benchmark.
+
+### Evaluate one policy at a time
+
+Rejected as the production CUDA path because the season kernel is dominated by
+many small draft and lineup launches. Flattening the population into one
+scenario batch increases GPU occupancy while the parity test guards against
+changing policy scores.
 
 ## Consequences
 

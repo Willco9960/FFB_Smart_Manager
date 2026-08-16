@@ -3,6 +3,8 @@ import torch
 from gpu_sim.full_season import create_synthetic_season_state, run_full_cuda_season
 from gpu_sim.policy_training import (
     evaluate_cuda_policy,
+    evaluate_cuda_policy_population,
+    prepare_cuda_scenario_bank,
     save_cuda_training_state,
     train_cuda_policy_population,
 )
@@ -119,3 +121,39 @@ def test_cuda_policy_training_checkpoint_resumes_population(tmp_path):
     assert len(resumed_metrics) == 2
     assert resumed_metrics[0].generation == 1
     assert resumed_metrics[1].generation == 2
+
+
+def test_batched_population_evaluation_matches_sequential_evaluation():
+    state = create_synthetic_season_state(
+        scenarios=2,
+        players=160,
+        weeks=17,
+        device=torch.device("cpu"),
+    )
+    policies = [ModularManagerPolicyNetwork() for _ in range(2)]
+    scenario_bank = prepare_cuda_scenario_bank(
+        [state],
+        scenario_repeats=1,
+        projection_noise=0.0,
+        seed=7,
+    )
+    sequential = [
+        evaluate_cuda_policy(
+            policy,
+            [state],
+            scenario_bank=scenario_bank,
+            enable_transactions=False,
+        )
+        for policy in policies
+    ]
+    batched = evaluate_cuda_policy_population(
+        policies,
+        [state],
+        scenario_bank=scenario_bank,
+        enable_transactions=False,
+    )
+
+    for expected, actual in zip(sequential, batched, strict=True):
+        assert actual.fitness == expected.fitness
+        assert actual.wins == expected.wins
+        assert actual.points_for == expected.points_for

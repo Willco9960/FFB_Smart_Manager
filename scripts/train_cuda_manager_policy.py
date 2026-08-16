@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
         help="Use torch.compile reduce-overhead for repeated CUDA policy forwards.",
     )
     parser.add_argument(
+        "--disable-population-batching",
+        action="store_true",
+        help="Use sequential policy evaluation for debugging or CPU parity.",
+    )
+    parser.add_argument(
         "--holdout-season",
         type=int,
         default=2025,
@@ -202,6 +207,7 @@ def main() -> None:
         draft_anchor_weight=args.draft_anchor_weight,
         risk_penalty=args.risk_penalty,
         compile_policy=args.compile_policy,
+        batch_population=not args.disable_population_batching,
         resume_state=resume_state,
         generation_callback=on_generation,
         checkpoint_callback=lambda generation, population, best_policy, metrics, rng: (
