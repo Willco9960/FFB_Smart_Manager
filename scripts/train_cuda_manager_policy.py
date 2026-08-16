@@ -35,6 +35,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mutation-strength", type=float, default=0.02)
     parser.add_argument("--final-mutation-strength", type=float, default=0.005)
     parser.add_argument("--draft-anchor-weight", type=float, default=0.20)
+    parser.add_argument("--risk-penalty", type=float, default=0.10)
+    parser.add_argument(
+        "--compile-policy",
+        action="store_true",
+        help="Use torch.compile reduce-overhead for repeated CUDA policy forwards.",
+    )
+    parser.add_argument(
+        "--holdout-season",
+        type=int,
+        default=2025,
+        help="Chronological unseen season used only for final audit; use 0 to disable.",
+    )
     parser.add_argument("--seed", type=int, default=20260816)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--players", type=int, default=256)
@@ -78,6 +90,16 @@ def load_historical_states(args: argparse.Namespace, device: torch.device):
         return list(executor.map(load, seasons))
 
 
+def load_holdout_state(args: argparse.Namespace, device: torch.device):
+    if args.holdout_season <= 0:
+        return None
+    return create_historical_cuda_inputs(
+        season=args.holdout_season,
+        players=args.players,
+        device=device,
+    ).state
+
+
 def main() -> None:
     args = parse_args()
     device = resolve_device(args.device)
@@ -99,6 +121,7 @@ def main() -> None:
     )
     print("Loading historical CUDA states...", flush=True)
     states = load_historical_states(args, device)
+    holdout_state = load_holdout_state(args, device)
     report = {
         "status": "running",
         "started_at": datetime.now().astimezone().isoformat(),
@@ -107,6 +130,7 @@ def main() -> None:
         "gpu_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         "configuration": vars(args) | {"device": str(device)},
         "generations": [],
+        "holdout": None,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
@@ -128,6 +152,8 @@ def main() -> None:
         print(
             f"[CUDA generation {metrics.generation}/{metrics.generations}] "
             f"best={metrics.best_fitness:.2f} avg={metrics.average_fitness:.2f} "
+            f"risk_adj={metrics.best_risk_adjusted_fitness:.2f} "
+            f"std={metrics.best_fitness_stddev:.2f} "
             f"wins={metrics.best_wins:.2f} playoffs={metrics.best_playoff_rate:.1%} "
             f"championships={metrics.best_championship_rate:.1%} "
             f"GPH={metrics.generations_per_hour:.2f} "
@@ -149,6 +175,8 @@ def main() -> None:
         enable_transactions=not args.disable_transactions,
         seed=args.seed,
         draft_anchor_weight=args.draft_anchor_weight,
+        risk_penalty=args.risk_penalty,
+        compile_policy=args.compile_policy,
         generation_callback=on_generation,
     )
     # The callback writes each checkpoint; this final write also covers a zero-
@@ -158,6 +186,37 @@ def main() -> None:
     report["completed_at"] = datetime.now().astimezone().isoformat()
     report["generations"] = [metric.to_dict() for metric in metrics_history]
     report["output"] = str(args.output)
+    if holdout_state is not None:
+        from gpu_sim.policy_training import evaluate_cuda_policy
+
+        holdout = evaluate_cuda_policy(
+            best_policy,
+            [holdout_state],
+            scenario_repeats=max(args.scenario_repeats, 8),
+            projection_noise=args.projection_noise,
+            enable_transactions=not args.disable_transactions,
+            seed=args.seed + 900_000,
+            draft_anchor_weight=args.draft_anchor_weight,
+            risk_penalty=args.risk_penalty,
+            compile_policy=args.compile_policy,
+        )
+        report["holdout"] = {
+            "season": args.holdout_season,
+            "fitness": holdout.fitness,
+            "fitness_stddev": holdout.fitness_stddev,
+            "risk_adjusted_fitness": holdout.risk_adjusted_fitness,
+            "wins": holdout.wins,
+            "points_for": holdout.points_for,
+            "playoff_rate": holdout.playoff_rate,
+            "championship_rate": holdout.championship_rate,
+            "elapsed_seconds": holdout.elapsed_seconds,
+        }
+        print(
+            f"Holdout {args.holdout_season}: fitness={holdout.fitness:.2f} "
+            f"wins={holdout.wins:.2f} playoffs={holdout.playoff_rate:.1%} "
+            f"championships={holdout.championship_rate:.1%}",
+            flush=True,
+        )
     args.report.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(f"CUDA manager policy saved to: {args.output}", flush=True)
     print(f"Training report saved to: {args.report}", flush=True)

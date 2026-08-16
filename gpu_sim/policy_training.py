@@ -9,7 +9,9 @@ remain enabled in the tensorized season engine.
 from __future__ import annotations
 
 import copy
+import importlib.util
 import random
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -29,6 +31,8 @@ CHAMPIONSHIP_REWARD = 150.0
 @dataclass(frozen=True)
 class CudaPolicyEvaluation:
     fitness: float
+    fitness_stddev: float
+    risk_adjusted_fitness: float
     wins: float
     points_for: float
     playoff_rate: float
@@ -42,6 +46,8 @@ class CudaGenerationMetrics:
     generations: int
     average_fitness: float
     best_fitness: float
+    best_fitness_stddev: float
+    best_risk_adjusted_fitness: float
     best_wins: float
     best_points_for: float
     best_playoff_rate: float
@@ -118,14 +124,36 @@ def evaluate_cuda_policy(
     enable_transactions: bool = True,
     seed: int = 1,
     draft_anchor_weight: float = 0.20,
+    risk_penalty: float = 0.10,
+    compile_policy: bool = False,
 ) -> CudaPolicyEvaluation:
     """Evaluate one policy across historical seasons on the selected device."""
 
     if not historical_states:
         raise ValueError("At least one historical state is required.")
+    if risk_penalty < 0.0:
+        raise ValueError("risk_penalty cannot be negative.")
     policy.eval()
     device = historical_states[0].device
     policy.to(device)
+    scoring_policy = policy
+    if compile_policy and device.type == "cuda":
+        if importlib.util.find_spec("triton") is None:
+            warnings.warn(
+                "torch.compile requested but Triton is unavailable; "
+                "using eager CUDA policy forwards.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        else:
+            try:
+                scoring_policy = torch.compile(policy, mode="reduce-overhead", dynamic=False)
+            except Exception as error:  # pragma: no cover - depends on local Triton install
+                warnings.warn(
+                    f"torch.compile unavailable; using eager CUDA policy forwards: {error}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
     started = perf_counter()
     fitness_values = []
     wins_values = []
@@ -145,7 +173,7 @@ def evaluate_cuda_policy(
         run_full_cuda_season(
             state,
             enable_transactions=enable_transactions,
-            policy_network=policy,
+            policy_network=scoring_policy,
             policy_team_indices=candidate_team_indices,
             draft_anchor_weight=draft_anchor_weight,
         )
@@ -158,8 +186,13 @@ def evaluate_cuda_policy(
         playoff_values.append(playoff.to(torch.float32).mean())
         champion_values.append(champion.mean())
     elapsed = perf_counter() - started
+    fitness_tensor = torch.stack(fitness_values)
+    fitness = float(fitness_tensor.mean().item())
+    fitness_stddev = float(fitness_tensor.std(unbiased=False).item())
     return CudaPolicyEvaluation(
-        fitness=float(torch.stack(fitness_values).mean().item()),
+        fitness=fitness,
+        fitness_stddev=fitness_stddev,
+        risk_adjusted_fitness=fitness - (risk_penalty * fitness_stddev),
         wins=float(torch.stack(wins_values).mean().item()),
         points_for=float(torch.stack(points_values).mean().item()),
         playoff_rate=float(torch.stack(playoff_values).mean().item()),
@@ -216,6 +249,8 @@ def train_cuda_policy_population(
     enable_transactions: bool = True,
     seed: int = 1,
     draft_anchor_weight: float = 0.20,
+    risk_penalty: float = 0.10,
+    compile_policy: bool = False,
     generation_callback=None,
 ) -> tuple[ModularManagerPolicyNetwork, list[CudaGenerationMetrics]]:
     """Evolve neural manager policies using CUDA full-season fitness."""
@@ -227,7 +262,7 @@ def train_cuda_policy_population(
     while len(population) < population_size:
         population.append(mutate_policy(initial_policy, rng, mutation_strength))
     best_policy = clone_policy(initial_policy)
-    best_fitness = float("-inf")
+    best_risk_adjusted = float("-inf")
     metrics: list[CudaGenerationMetrics] = []
     started = perf_counter()
 
@@ -239,19 +274,24 @@ def train_cuda_policy_population(
                 scenario_repeats=scenario_repeats,
                 projection_noise=projection_noise,
                 enable_transactions=enable_transactions,
-                seed=seed + generation * 1000 + index,
+                # Common random numbers: every policy sees identical scenario
+                # noise and rotating draft slots, so ranking reflects policy
+                # decisions rather than an accidental easier draw.
+                seed=seed + generation * 1000,
                 draft_anchor_weight=draft_anchor_weight,
+                risk_penalty=risk_penalty,
+                compile_policy=compile_policy,
             )
             for index, policy in enumerate(population)
         ]
         ranked = sorted(
             zip(evaluations, population, strict=True),
-            key=lambda item: item[0].fitness,
+            key=lambda item: item[0].risk_adjusted_fitness,
             reverse=True,
         )
         best_evaluation, generation_best = ranked[0]
-        if best_evaluation.fitness > best_fitness:
-            best_fitness = best_evaluation.fitness
+        if best_evaluation.risk_adjusted_fitness > best_risk_adjusted:
+            best_risk_adjusted = best_evaluation.risk_adjusted_fitness
             best_policy = clone_policy(generation_best)
         elapsed = perf_counter() - started
         generation_metrics = CudaGenerationMetrics(
@@ -259,6 +299,8 @@ def train_cuda_policy_population(
             generations=generations,
             average_fitness=sum(item.fitness for item in evaluations) / len(evaluations),
             best_fitness=best_evaluation.fitness,
+            best_fitness_stddev=best_evaluation.fitness_stddev,
+            best_risk_adjusted_fitness=best_evaluation.risk_adjusted_fitness,
             best_wins=best_evaluation.wins,
             best_points_for=best_evaluation.points_for,
             best_playoff_rate=best_evaluation.playoff_rate,
