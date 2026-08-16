@@ -7,6 +7,7 @@ This directory contains the project’s durable explanations and decisions. Gene
 - [Architecture](ARCHITECTURE.md): how data, models, agents, the league engine, and reports connect.
 - [Spec-Driven Development](SPEC_DRIVEN_DEVELOPMENT.md): how requirements become generated code, tests, experiments, and documentation.
 - [Data and reproducibility](DATA_AND_REPRODUCIBILITY.md): season cutoffs, leakage rules, data artifacts, and experiment reporting.
+- [AI engineering audit](AI_ENGINEERING_AUDIT.md): expert review of model quality, simulator fidelity, training design, and optimization priorities.
 - [Roadmap](ROADMAP.md): current capabilities and next milestones.
 - [Decision records](decisions/README.md): why major design choices were made.
 

@@ -10,8 +10,8 @@ from pathlib import Path
 
 import torch
 
-from gpu_sim.tensorized_draft import benchmark_tensorized_draft
 from gpu_sim.tensor_state import create_synthetic_scenario_batch
+from gpu_sim.tensorized_draft import benchmark_tensorized_draft
 
 
 def parse_args() -> argparse.Namespace:
