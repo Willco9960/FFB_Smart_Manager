@@ -94,14 +94,14 @@ batches, while the Python-heavy simulator remains on bounded CPU workers. The
 trainer reuses those workers across generations and limits each worker's
 PyTorch thread pools to avoid multiplying BLAS threads across processes.
 
-The `gpu_sim/` package is an isolated tensorized prototype. It currently
-benchmarks projection-best snake drafts and offensive lineup scoring in large
-batches, with a CPU reference and CUDA parity tests. It is not wired into the
-full-season simulator: waivers, trades, playoffs, and irregular league rules
-remain on the production CPU path until each component passes an equivalent
-parity and outcome-validation gate. Use
-`scripts.compare_tensorized_backends` to measure the prototype and do not
-interpret its batch rate as full-season Petic GPH.
+The `gpu_sim/` package contains a tensorized full-season path. Its modular
+policy can control draft, lineup, waiver, and trade heads with legal masks and
+records counterfactual transaction gains; playoff scoring uses the same
+position-rule contract. The flattened population evaluator deliberately falls
+back to exact per-policy evaluation while team-conditioned head routing is
+being benchmarked, so throughput claims remain honest. Use
+`scripts.compare_tensorized_backends` for kernel benchmarks and do not
+interpret draft-only batch rate as full-season Petic GPH.
 
 The prototype's migration boundary is a `TensorScenarioBatch`: player
 projections, actual outcomes, position IDs, and stable player keys are loaded
@@ -110,15 +110,12 @@ score buffer, and `--profile-stages` enables synchronized draft/lineup timing
 without adding overhead to ordinary throughput runs. The first profile showed
 lineup selection as the larger stage, so it is the next optimization target.
 
-The full-stage prototype in `gpu_sim/full_season.py` covers tensorized draft,
-weekly scoring, inverse-standings waivers, one-for-one trades, standings, and
-the six-team playoff bracket. Standings include wins, losses, ties,
-points-for, and points-against. It is benchmark-only until parity reports are
-accepted. Its waiver and trade counters do not yet replace the CPU replay
-reward attribution. Early measurements show that CUDA needs a large batch: 8 leagues can
-be slower than CPU, while 256 leagues are faster. The intended production
-batch therefore combines manager population members with historical scenarios
-instead of dispatching one league at a time.
+The full-stage path covers tensorized draft, weekly scoring, inverse-standings
+waivers, one-for-one trades, standings, and the six-team playoff bracket.
+Standings include wins, losses, ties, points-for, and points-against. CUDA
+transaction gains are stored as projected counterfactual deltas; CPU replay
+remains the behavioral reference for outcome-level attribution. Promotion still
+requires exact parity and holdout gates before a checkpoint is flagship-ready.
 
 `gpu_sim/historical_adapter.py` converts leakage-safe previous-season
 projections and week-by-week outcomes into the same tensor contract. Use
@@ -132,4 +129,5 @@ action parity is complete.
 - A projection model does not automatically become a manager policy.
 - A strong full-season score does not prove weekly consistency or future generalization.
 - A neural transaction proposal cannot bypass a genome/rules fallback or validation gate.
-- A report must identify when K/DST or transaction behavior is simplified.
+- A report must identify when source data lacks K/DST, injury, or transaction
+  status fields; the simulator must not fabricate unavailable information.

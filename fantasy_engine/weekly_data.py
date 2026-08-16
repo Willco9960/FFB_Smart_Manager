@@ -10,6 +10,7 @@ from fantasy_engine.historical_player_pool import (
     FANTASY_RELEVANT_POSITIONS,
     SPECIAL_TEAMS_POSITIONS,
     create_team_defense_rows,
+    get_player_id,
 )
 
 
@@ -24,12 +25,7 @@ class WeeklyPlayerPerformance:
 
 
 def get_player_identifier(row: dict[str, str]) -> str:
-    player_id = row.get("player_id", "")
-
-    if player_id:
-        return player_id
-
-    return f"{row.get('player_name', '')}:{row.get('position', '')}"
+    return get_player_id(row)
 
 
 def create_weekly_performances(

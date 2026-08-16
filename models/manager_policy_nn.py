@@ -5,6 +5,7 @@ from torch import nn
 
 from fantasy_engine.player import Player
 from fantasy_engine.team import Team
+from models.feature_manifest import create_feature_manifest, validate_checkpoint_manifest
 
 POSITION_ORDER = ("QB", "RB", "WR", "TE")
 MANAGER_FEATURE_COUNT = 14
@@ -78,10 +79,19 @@ def save_manager_policy_network(
     output_path,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = create_feature_manifest(
+        feature_names=tuple(
+            f"manager_action_feature_{index}"
+            for index in range(MANAGER_FEATURE_COUNT)
+        ),
+        decision_cutoff="pre-decision",
+    )
     torch.save(
         {
             "input_size": MANAGER_FEATURE_COUNT,
             "state_dict": model.state_dict(),
+            "feature_manifest": manifest.to_dict(),
+            "feature_manifest_digest": manifest.digest(),
         },
         output_path,
     )
@@ -89,6 +99,7 @@ def save_manager_policy_network(
 
 def load_manager_policy_network(model_path) -> ManagerPolicyNetwork:
     checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+    validate_checkpoint_manifest(checkpoint)
     model = ManagerPolicyNetwork(input_size=checkpoint["input_size"])
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()

@@ -15,8 +15,8 @@ from fantasy_engine.transactions import (
 )
 
 
-def create_player(name: str, position: str = "RB") -> Player:
-    return Player(name=name, position=position, team="TEST")
+def create_player(name: str, position: str = "RB", player_id: str | None = None) -> Player:
+    return Player(name=name, position=position, team="TEST", player_id=player_id)
 
 
 def create_league() -> tuple[League, Player, Player, Player]:
@@ -145,3 +145,29 @@ def test_transaction_value_tracker_evaluates_trade_for_both_teams():
     assert len(impacts) == 2
     assert impacts[0].net_points == 10.0
     assert impacts[1].net_points == -10.0
+
+
+def test_transaction_value_tracker_prefers_stable_player_id_over_changed_name():
+    incoming = create_player("New Name", player_id="player-1")
+    outgoing = create_player("Old Name", player_id="player-2")
+    league = League(
+        name="Identity League",
+        teams=[Team(name="Team One", roster=[outgoing])],
+        available_players=[incoming],
+    )
+    transaction = apply_waiver_claim(
+        league,
+        WaiverClaim("Team One", incoming, outgoing, week=2),
+    )
+    tracker = TransactionValueTracker()
+    tracker.register([transaction])
+
+    impacts = tracker.evaluate_week(
+        week=2,
+        weekly_points_by_player={
+            ("player-1", "RB"): 18.0,
+            ("player-2", "RB"): 6.0,
+        },
+    )
+
+    assert impacts[0].net_points == 12.0

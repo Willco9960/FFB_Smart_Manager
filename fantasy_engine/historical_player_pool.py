@@ -56,6 +56,26 @@ def get_player_team(row: dict[str, str]) -> str:
     return team
 
 
+def get_player_id(row: dict[str, str]) -> str:
+    """Return a stable identity for a player or team defense unit.
+
+    nflverse provides ``player_id`` for most skill players.  Older exports and
+    aggregated D/ST rows do not always have one, so deterministic fallbacks
+    keep legacy fixtures usable without treating a name change as a new
+    player when an authoritative ID exists.
+    """
+    raw_id = str(row.get("player_id", "") or "").strip()
+    if raw_id and raw_id.lower() not in {"0", "none", "nan"}:
+        return raw_id
+
+    position = get_player_position(row)
+    if position == "DST":
+        return f"dst:{get_player_team(row).strip().upper()}"
+
+    name = get_player_name(row).strip().lower()
+    return f"name:{name}:{position.lower()}"
+
+
 def create_player_from_historical_row(
     row: dict[str, str],
     scoring_settings: FantasyScoringSettings = STANDARD_SCORING,
@@ -68,6 +88,7 @@ def create_player_from_historical_row(
         team=get_player_team(row),
         projected_score=0.0,
         actual_score=fantasy_points,
+        player_id=get_player_id(row),
     )
 
 
@@ -108,6 +129,7 @@ def create_team_defense_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]
                 "player_name": f"{team} D/ST",
                 "position": "DST",
                 "recent_team": team,
+                "player_id": f"dst:{team.upper()}",
                 "week": week,
             }
 

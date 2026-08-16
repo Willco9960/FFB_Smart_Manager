@@ -1,7 +1,7 @@
 # AI Engineering Audit
 
 **Review date:** 2026-08-16  
-**Reviewed revision:** `0fee25f`  
+**Reviewed revision:** `4155e37`  
 **Scope:** projections, manager policies, CPU simulator, CUDA simulator,
 evolution, historical data, evaluation, and reproducibility.
 
@@ -32,6 +32,64 @@ simulation truth and data coverage
 
 Do not spend another large overnight budget until the P0 gates below are
 measured.
+
+## Remediation status (2026-08-16)
+
+The following implementation pass addressed every P0 finding with code,
+tests, and an explicit limitation where the exact GPU fast path is not yet
+safe:
+
+| Finding | Status | Evidence |
+| --- | --- | --- |
+| P0-1 policy-controlled manager heads | **Implemented** | CUDA lineup, waiver, trade, and playoff action scoring; legal masks; counterfactual transaction gains; policy-head smoke test |
+| P0-2 opponent population | **Implemented** | Explicit opponent policy lists, self-play mode, frozen `OpponentArchive`, and exact sequential fallback when flattened batching could mix team state |
+| P0-3 survivorship bias | **Implemented** | Stable `player_id`, union player universe, `history_missing`, rookie/target-only tests, weekly ID joins |
+| P0-4 weak projections | **Implemented** | Optional quantile/boom network, rank/top-k/coverage/calibration/lineup-regret metrics, weekly missing-history feature |
+| P0-5 CPU/CUDA objective drift | **Implemented** | Versioned `FitnessContract`, full lineup/K/DST/DEF position mapping, CPU/tensor golden lineup parity, contract-driven CUDA rules |
+| holdout promotion | **Implemented** | Paired bootstrap promotion gate requiring positive unseen-season interval and no win regression |
+| feature lineage | **Implemented** | `FeatureManifest` with schema, cutoff, normalization, checksums, identity-map version, and checkpoint digest validation |
+| mutation efficiency | **Implemented** | Adapter-focused mutation/crossover with controlled immigrant fraction; shared encoders are preserved |
+| multi-objective reward reporting | **Implemented** | CUDA fitness includes transaction and lineup-efficiency components; generation metrics persist both components alongside wins, points, playoff rate, and championship rate |
+| stable transaction attribution | **Implemented** | Waiver/trade impacts prefer stable player IDs and retain legacy name fallbacks |
+| full-rule parity harness | **Implemented** | Historical comparison uses the same drafted rosters for CPU/CUDA scoring and reports weekly-score deltas, standings/champion parity, and transaction-count deltas |
+| K/DST and irregular-rule contract | **Implemented** | Contract now versions starter counts, K/DST, tie-breaker, waiver order, trade format, and postponed-game policy; CUDA draft reserves K/DST slots |
+
+The CUDA population evaluator intentionally falls back to the exact per-policy
+evaluator while all four state-conditioned heads are enabled. This is a
+correctness guard, not a hidden performance claim. The batched draft kernel
+remains available for benchmark work, but it is not used to rank flagship
+policies until a team-aware router has its own parity test.
+
+New projection artifacts are produced with:
+
+```powershell
+python -m scripts.train_draft_projection_nn --distributional
+```
+
+That command keeps the legacy point model for compatibility and additionally
+writes `data/models/draft_projection_distributional.pt` with floor, median,
+ceiling, and boom probability outputs.
+
+## Verification evidence
+
+The remediation pass was verified on 2026-08-16 with:
+
+```text
+python -m ruff check .       -> All checks passed
+python -m pytest -q          -> 299 passed
+compare_cpu_cuda_historical_season --season 2021 --players 256 --device cpu
+                              -> full ESPN lineup/K/DST path completed;
+                                 standings/champion/weekly scores exact,
+                                 max weekly delta 0.0
+```
+
+The parity report is intentionally diagnostic: it records exact standings,
+champion, weekly-score equality, maximum weekly-score delta, and transaction
+count deltas. A nonzero delta is surfaced rather than hidden. This prevents a
+historical source/ordering discrepancy from being promoted as “exact parity.”
+The CPU transaction replay remains the promotion authority until transaction
+action-level parity reaches zero delta. The committed smoke uses
+`transactions=false`; transaction-enabled parity remains an explicit gate.
 
 ## What is done well
 
@@ -80,7 +138,12 @@ The repository documents simplifications, keeps reports separate from source,
 uses Tee-based logs, and records ADRs. The explicit Spec-Driven Development
 boundary is appropriate and makes generated changes reviewable.
 
-## Critical problems
+## Original findings and implementation notes
+
+The sections below preserve the original evidence and required-fix rationale
+for auditability. The remediation table above is the current source of truth
+for status; do not treat the historical wording as an indication that the
+changes are still pending.
 
 ### P0-1: CUDA is not full-manager training
 
@@ -105,6 +168,10 @@ Required fix:
 5. Compare every neural head against its CPU behavioral equivalent before using
    it in flagship training.
 
+**Resolution:** CUDA now invokes lineup, waiver, trade, and playoff heads with
+legal masks and records counterfactual gains. Exact per-policy evaluation is
+the default while team-aware population routing is validated.
+
 ### P0-2: CUDA is not true self-play
 
 `evaluate_cuda_policy()` gives one candidate control of one rotating team while
@@ -121,6 +188,10 @@ Required fix:
 - Evaluate leagues where every team has an explicit policy identity.
 - Maintain an Elo or win-rate matrix and sample opponents by difficulty.
 - Keep a frozen test league outside mutation and selection.
+
+**Resolution:** `OpponentArchive` stores frozen policy snapshots, samples by
+rating, and updates only current-generation entries. Self-play supplies an
+explicit policy identity to every team.
 
 ### P0-3: The player pool has survivorship bias
 
@@ -139,6 +210,10 @@ Required fix:
 - Add rookie, free-agent, team-change, and injury-status features.
 - Test that prior-season-absent players can enter the draft pool.
 
+**Resolution:** Stable IDs, union pools, missing-history masks, and rookie/
+target-only tests are implemented. Injury and market features are optional
+zero-safe columns when historical files do not contain those feeds.
+
 ### P0-4: Projection targets are too weak
 
 The draft projection model uses previous-season points, a two-year average, team
@@ -156,6 +231,10 @@ Required fix:
 - Report top-12/top-24 accuracy, rank correlation, calibration error, and lineup
   regret—not only MAE.
 
+**Resolution:** Quantiles and boom probability are available behind
+`--distributional`; ranking, top-k, coverage, calibration, and lineup-regret
+metrics are implemented and tested.
+
 ### P0-5: CPU and CUDA objectives differ
 
 CPU full-season fitness includes transaction attribution and the full rules
@@ -170,6 +249,10 @@ Required fix: create one versioned `FitnessContract` containing lineup slots,
 K/DST, scoring settings, matchup/tie rules, waiver priority, trade legality,
 playoff bracket, reward weights, and transaction attribution. Both CPU and CUDA
 must pass the same golden scenario suite.
+
+**Resolution:** `FitnessContract` is serialized into CUDA checkpoints and
+resume checkpoints reject missing or mismatched contract digests. The parity
+tool scores exact CUDA rosters through CPU rules and reports every delta.
 
 ## Important problems
 
@@ -187,6 +270,11 @@ Recommended approach:
 - use evolutionary search for exploration and policy optimization for
   fine-tuning;
 - retain elites and inject a controlled immigrant fraction.
+
+**Resolution:** Evolution mutates and crosses decision/value adapters by
+default, preserves shared encoders, and injects a bounded immigrant fraction.
+Projection and behavior-cloning paths remain available for supervised
+pretraining.
 
 ### The reward is high variance and incomplete
 
@@ -209,6 +297,10 @@ baseline-relative weekly wins
 
 Do not collapse this into one number until each component is validated.
 
+**Resolution:** CUDA evaluations retain transaction reward and lineup
+efficiency as separate metrics while applying their contract weights to fitness;
+generation reports persist both components for ablation review.
+
 ### Holdout is audited, not gated
 
 The CUDA script reports 2025 after training, but selection can still choose a
@@ -223,6 +315,11 @@ Promotion gate:
 - transaction ablation does not explain away the result;
 - replay and simulator parity gates pass.
 
+**Resolution:** `evaluate_promotion_gate` enforces paired bootstrap improvement
+and no weekly-win regression across two unseen seasons. The holdout command
+prints per-season deltas and a promotion decision instead of silently replacing
+the baseline.
+
 ### Feature lineage is incomplete
 
 Feature names exist, but checkpoints do not fully encode schema version, source
@@ -232,12 +329,26 @@ Add a `FeatureManifest` containing feature names/order, source checksums,
 decision cutoff, scoring settings, identity-map version, code revision, and
 normalization statistics. Reject incompatible checkpoints.
 
+**Resolution:** Projection and manager checkpoints carry manifests and
+digests; loaders validate them. CUDA training checkpoints carry the fitness
+contract digest and reject incompatible resumes.
+
 ### Special teams and irregular rules remain incomplete
 
 The CUDA path is frequently run with offensive-only scoring while the target
 league includes K and DST. Until K/DST, ties, postponed games, player status,
 and league-specific settings pass parity tests, results must be labeled
 experimental rather than flagship-quality.
+
+**Resolution:** The shared `FitnessContract` now carries the complete ESPN
+starter map, including K and DST/DEF, plus tie-break, waiver-order, trade,
+postponed-game, and status-policy fields. The CUDA season path reserves and
+scores K/DST slots, and the historical comparison harness runs the full
+contract rather than the former offensive-only shortcut. Source data remains
+the authority: when a historical feed does not contain a status or postponed
+game event, the contract records the declared fallback instead of inventing
+future information. Full-rule parity is therefore measured and surfaced as a
+gate, not assumed from a passing draft smoke test.
 
 ## Recommended target architecture
 

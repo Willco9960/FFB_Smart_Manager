@@ -8,6 +8,7 @@ from fantasy_engine.historical_player_pool import (
     FANTASY_RELEVANT_POSITIONS,
     SPECIAL_TEAMS_POSITIONS,
     create_team_defense_rows,
+    get_player_id,
     get_player_name,
     get_player_position,
     get_player_team,
@@ -17,7 +18,7 @@ from fantasy_engine.player import Player
 
 def create_player_key(row: dict[str, str]) -> tuple[str, str]:
     return (
-        get_player_name(row),
+        get_player_id(row),
         get_player_position(row),
     )
 
@@ -44,7 +45,7 @@ def build_season_totals(
     scoring_settings: FantasyScoringSettings = STANDARD_SCORING,
     include_special_teams: bool = False,
 ) -> dict[tuple[str, str], dict[str, str | float]]:
-    season_totals: dict[tuple[str, str], dict[str, str | float]] = {}
+    season_totals: dict[tuple[str, str], dict[str, str | float | bool]] = {}
 
     source_rows = list(rows)
 
@@ -66,6 +67,7 @@ def build_season_totals(
 
         if player_key not in season_totals:
             season_totals[player_key] = {
+                "player_id": get_player_id(row),
                 "name": get_player_name(row),
                 "position": get_player_position(row),
                 "team": get_player_team(row),
@@ -103,18 +105,32 @@ def create_leakage_safe_player_pool(
     )
     players = []
 
-    for player_key, actual_player in actual_totals.items():
-        if player_key not in projection_totals:
+    # Use the union rather than an inner join.  A player absent from the
+    # projection season is a legitimate draft candidate (rookie, returning
+    # player, or changed identity) and must remain in the pre-season universe.
+    for player_key in projection_totals.keys() | actual_totals.keys():
+        projection_player = projection_totals.get(player_key)
+        actual_player = actual_totals.get(player_key)
+        source_player = actual_player or projection_player
+        if source_player is None:
             continue
 
-        projection_player = projection_totals[player_key]
-
         player = Player(
-            name=str(actual_player["name"]),
-            position=str(actual_player["position"]),
-            team=str(actual_player["team"]),
-            projected_score=float(projection_player["fantasy_points"]),
-            actual_score=float(actual_player["fantasy_points"]),
+            name=str(source_player["name"]),
+            position=str(source_player["position"]),
+            team=str(source_player["team"]),
+            projected_score=(
+                float(projection_player["fantasy_points"])
+                if projection_player is not None
+                else 0.0
+            ),
+            actual_score=(
+                float(actual_player["fantasy_points"])
+                if actual_player is not None
+                else 0.0
+            ),
+            player_id=str(source_player["player_id"]),
+            history_missing=projection_player is None,
         )
         players.append(player)
 

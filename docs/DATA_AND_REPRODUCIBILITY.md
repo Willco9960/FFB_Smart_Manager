@@ -25,6 +25,21 @@ The long-running experiments commonly use 2001–2024 for training and 2025 as a
 
 Generated artifacts are evidence for an experiment, not replacements for the code and configuration that produced them.
 
+## Identity and feature provenance
+
+Player joins use the source `player_id` whenever available. Deterministic
+fallback IDs are used only for legacy rows and team-defense aggregates. Draft
+universes are built from the union of known pre-season and target-season
+players; a `history_missing` mask identifies rookies or returning players
+without prior-season history instead of silently dropping them.
+
+Projection checkpoints include a `FeatureManifest` containing feature order,
+schema version, decision cutoff, normalization statistics, source checksums,
+identity-map version, and a digest. Loaders validate the digest and reject
+incompatible feature names. Manager evaluation uses the versioned
+`FitnessContract` so CPU and CUDA runs declare the same scoring and lineup
+semantics.
+
 ## Required experiment record
 
 Each meaningful run should record:
@@ -42,6 +57,11 @@ Each meaningful run should record:
 ## Evaluation expectations
 
 Use chronological validation whenever possible. Compare against simple baselines such as ADP/projection, random, genome, neural, and disabled-transaction arms. Report weekly wins, points for, playoff rate, championship rate, lineup efficiency, transaction value, and uncertainty—not only a single fitness number.
+
+Promotion is gated, not merely reported: paired unseen-season deltas must have
+a positive bootstrap interval and must not regress weekly wins. A model that
+fails the gate remains an experiment artifact and is not promoted to the
+flagship checkpoint.
 
 ## Synthetic seasons
 

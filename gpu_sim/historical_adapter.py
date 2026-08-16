@@ -1,10 +1,8 @@
 """Leakage-safe conversion of historical seasons into CUDA tensors.
 
-The adapter mirrors the current CPU projection contract: a season's draft
-projection comes from the previous season, and weekly projections use only
-performances from weeks before the decision week. It intentionally targets the
-CPU pipeline's offensive lineup mode while special-teams parity is still
-tracked separately.
+The adapter mirrors the CPU projection cutoff and full ESPN lineup contract:
+draft projections come from the previous season, weekly projections use only
+prior weeks, and K/DST rows are included when the source data provides them.
 """
 
 from __future__ import annotations
@@ -38,7 +36,8 @@ def _performance_history(
 ) -> dict[tuple[str, str], list[WeeklyPlayerPerformance]]:
     history: dict[tuple[str, str], list[WeeklyPlayerPerformance]] = {}
     for performance in performances:
-        history.setdefault((performance.player_name, performance.position), []).append(performance)
+        performance_id = getattr(performance, "player_id", performance.player_name)
+        history.setdefault((performance_id, performance.position), []).append(performance)
     return history
 
 
@@ -69,6 +68,7 @@ def create_historical_cuda_inputs(
         projection_season=projection_season,
         actual_season=season,
         raw_data_dir=raw_data_dir,
+        include_special_teams=True,
     )[:players]
     if len(player_pool) < 160:
         raise ValueError(
@@ -79,17 +79,24 @@ def create_historical_cuda_inputs(
     performances = load_weekly_performances(
         season=season,
         raw_data_dir=raw_data_dir,
+        include_special_teams=True,
     )
     history = _performance_history(performances)
-    player_keys = {(player.name, player.position) for player in player_pool}
+    player_keys = {
+        (getattr(player, "player_id", None) or player.name, player.position)
+        for player in player_pool
+    }
     actual_by_week = {
         (
             performance.week,
-            performance.player_name,
+            getattr(performance, "player_id", performance.player_name),
             performance.position,
         ): performance.fantasy_points
         for performance in performances
-        if (performance.player_name, performance.position) in player_keys
+        if (
+            getattr(performance, "player_id", performance.player_name),
+            performance.position,
+        ) in player_keys
     }
 
     draft_projections = torch.tensor(
@@ -99,7 +106,10 @@ def create_historical_cuda_inputs(
     weekly_projections = torch.zeros((1, weeks, len(player_pool)), dtype=torch.float32)
     weekly_actual_points = torch.zeros_like(weekly_projections)
     for player_index, player in enumerate(player_pool):
-        player_history = history.get((player.name, player.position), [])
+        player_history = history.get(
+            (getattr(player, "player_id", None) or player.name, player.position),
+            [],
+        )
         for week_index in range(weeks):
             historical_week = week_index + 1
             weekly_projections[0, week_index, player_index] = calculate_weekly_projection(
@@ -108,12 +118,19 @@ def create_historical_cuda_inputs(
                 season_length=14,
             )
             weekly_actual_points[0, week_index, player_index] = actual_by_week.get(
-                (historical_week, player.name, player.position),
+                (
+                    historical_week,
+                    getattr(player, "player_id", None) or player.name,
+                    player.position,
+                ),
                 0.0,
             )
 
     position_ids = torch.tensor(
-        [{"QB": 0, "RB": 1, "WR": 2, "TE": 3}[player.position] for player in player_pool],
+        [
+            {"QB": 0, "RB": 1, "WR": 2, "TE": 3, "DST": 4, "K": 5}[player.position]
+            for player in player_pool
+        ],
         dtype=torch.long,
     )
     state = CudaSeasonState(
@@ -121,6 +138,9 @@ def create_historical_cuda_inputs(
         weekly_projections=weekly_projections.to(device),
         weekly_actual_points=weekly_actual_points.to(device),
         positions=position_ids.to(device),
+        lineup_position_rules=(
+            (0,), (1,), (1,), (2,), (2,), (3,), (1, 2, 3), (4,), (5,)
+        ),
     )
     return HistoricalCudaInputs(
         season=season,

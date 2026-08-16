@@ -5,7 +5,9 @@ import torch
 
 from fantasy_engine.league import League
 from fantasy_engine.player import Player
+from fantasy_engine.projection_dataset import get_feature_names
 from models.draft_projection_nn import DraftProjectionNetwork, FeatureScaler
+from models.feature_manifest import validate_checkpoint_manifest, validate_feature_names
 
 
 class NeuralProjectionService:
@@ -25,6 +27,8 @@ class NeuralProjectionService:
     @classmethod
     def from_checkpoint(cls, model_path: Path) -> "NeuralProjectionService":
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+        validate_checkpoint_manifest(checkpoint)
+        validate_feature_names(checkpoint, tuple(get_feature_names()))
         model = DraftProjectionNetwork(input_size=checkpoint["input_size"])
         model.load_state_dict(checkpoint["state_dict"])
         feature_scaler = FeatureScaler(

@@ -27,12 +27,20 @@ def _validate_inputs(
         raise ValueError("team_count and rounds must be positive.")
     if projected_points.shape[1] < team_count * rounds:
         raise ValueError("There must be enough players to fill every roster.")
-    if positions.numel() and (positions.min() < 0 or positions.max() > 3):
-        raise ValueError("positions must use QB=0, RB=1, WR=2, TE=3.")
+    if positions.numel() and (positions.min() < 0 or positions.max() > 5):
+        raise ValueError("positions must use QB=0, RB=1, WR=2, TE=3, DST=4, K=5.")
 
 
 def _position_one_hot(positions: torch.Tensor) -> torch.Tensor:
-    return torch.nn.functional.one_hot(positions, num_classes=4).to(torch.float32)
+    # The compact legacy policy encoder has four position channels.  Special
+    # teams are treated as a TE-like roster feature while lineup scoring keeps
+    # their exact K/DST legality in the full rules contract.
+    return torch.nn.functional.one_hot(positions.clamp_max(3), num_classes=4).to(torch.float32)
+
+
+def _constraint_position_one_hot(positions: torch.Tensor) -> torch.Tensor:
+    """Exact six-position mask used for roster legality."""
+    return torch.nn.functional.one_hot(positions, num_classes=6).to(torch.float32)
 
 
 def _build_player_features(
@@ -45,8 +53,9 @@ def _build_player_features(
     """Build the 14+25 feature tensors used by ModularManagerPolicyNetwork."""
 
     scenarios, player_count = projected_points.shape
+    feature_positions = positions.clamp_max(3)
     roster = rosters[:, team_index]
-    roster_positions = positions[roster]
+    roster_positions = feature_positions[roster]
     roster_counts = torch.stack(
         [(roster_positions == position).sum(dim=1) for position in range(4)],
         dim=1,
@@ -63,7 +72,7 @@ def _build_player_features(
     highest_available = projected_points.masked_fill(~available, float("-inf")).max(dim=1).values
     highest_available = highest_available.clamp_min(1.0)
     candidate_same_position = available_position_counts.gather(
-        1, positions.unsqueeze(0).expand(scenarios, -1)
+        1, feature_positions.unsqueeze(0).expand(scenarios, -1)
     )
     # Rank each position with argsort/scatter rather than a dense
     # [scenarios, players, players] comparison.  The old pairwise comparison
@@ -72,7 +81,7 @@ def _build_player_features(
         (scenarios, player_count), dtype=torch.float32, device=projected_points.device
     )
     for position in range(4):
-        position_mask = positions == position
+        position_mask = feature_positions == position
         position_values = projected_points[:, position_mask].masked_fill(
             ~available[:, position_mask], float("-inf")
         )
@@ -103,7 +112,10 @@ def _build_player_features(
                 for position in range(4)
             ],
             *[
-                (positions == position).to(torch.float32).unsqueeze(0).expand(scenarios, -1)
+                (feature_positions == position)
+                .to(torch.float32)
+                .unsqueeze(0)
+                .expand(scenarios, -1)
                 for position in range(4)
             ],
         ],
@@ -160,6 +172,7 @@ def run_batched_policy_draft(
     projected_points: torch.Tensor,
     positions: torch.Tensor,
     policy_network: torch.nn.Module,
+    team_policy_networks: list[torch.nn.Module] | None = None,
     *,
     policy_team_indices: torch.Tensor | None = None,
     team_count: int = 10,
@@ -192,14 +205,19 @@ def run_batched_policy_draft(
         dtype=torch.long,
         device=projected_points.device,
     )
-    position_one_hot = _position_one_hot(positions)
-    minimums = projected_points.new_tensor((1, 4, 4, 1))
-    maximums = projected_points.new_tensor((2, 6, 7, 3))
+    position_one_hot = _constraint_position_one_hot(positions)
+    minimums = projected_points.new_tensor((1, 4, 4, 1, 1, 1))
+    maximums = projected_points.new_tensor((2, 6, 7, 3, 1, 1))
     autocast_enabled = use_amp and projected_points.device.type == "cuda"
     counts = torch.zeros(
-        (scenarios, team_count, 4), dtype=torch.int16, device=projected_points.device
+        (scenarios, team_count, 6), dtype=torch.int16, device=projected_points.device
     )
     policy_network.eval()
+    if team_policy_networks is not None:
+        if len(team_policy_networks) != team_count:
+            raise ValueError("team_policy_networks must contain one policy per team.")
+        for team_policy in team_policy_networks:
+            team_policy.eval()
 
     for round_number in range(rounds):
         order = range(team_count) if round_number % 2 == 0 else range(team_count - 1, -1, -1)
@@ -221,12 +239,17 @@ def run_batched_policy_draft(
             )
             flat_player = player_features.reshape(-1, player_features.shape[-1])
             flat_state = state_features.reshape(-1, state_features.shape[-1])
+            selected_policy = (
+                team_policy_networks[team_index]
+                if team_policy_networks is not None
+                else policy_network
+            )
             with torch.autocast(
                 device_type=projected_points.device.type,
                 dtype=torch.float16,
                 enabled=autocast_enabled,
             ):
-                policy_scores = policy_network(
+                policy_scores = selected_policy(
                     flat_player,
                     flat_state,
                     decision_type="draft",
@@ -237,7 +260,11 @@ def run_batched_policy_draft(
             scores = policy_scores.to(working_scores.dtype) + anchor_weight * projection_anchor
             scores = scores.masked_fill(~constrained, float("-inf"))
             opponent_scores = working_scores.masked_fill(~available, float("-inf"))
-            use_policy = policy_team_indices == team_index
+            use_policy = (
+                torch.ones(scenarios, dtype=torch.bool, device=projected_points.device)
+                if team_policy_networks is not None
+                else policy_team_indices == team_index
+            )
             scores = torch.where(use_policy.unsqueeze(1), scores, opponent_scores)
             scores = torch.where(no_constrained.unsqueeze(1), opponent_scores, scores)
             selected = scores.argmax(dim=1)

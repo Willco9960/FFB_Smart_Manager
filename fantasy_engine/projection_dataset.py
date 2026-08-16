@@ -14,6 +14,7 @@ class SeasonProjectionExample:
     season: int
     features: tuple[float, ...]
     target_points: float
+    player_id: str | None = None
 
 
 def get_feature_names() -> tuple[str, ...]:

@@ -104,11 +104,17 @@ def run_historical_regular_season(
             replay_records=decision_replay_records,
             season=season,
         )
-        weekly_points_by_player = {
-            (performance.player_name, performance.position): performance.fantasy_points
-            for performance in performances
-            if performance.week == week
-        }
+        weekly_points_by_player = {}
+        for performance in performances:
+            if performance.week != week:
+                continue
+            weekly_points_by_player[(performance.player_id, performance.position)] = (
+                performance.fantasy_points
+            )
+            # Keep the legacy key for old hand-authored players and reports.
+            weekly_points_by_player[(performance.player_name, performance.position)] = (
+                performance.fantasy_points
+            )
         weekly_transaction_impacts[week] = transaction_tracker.evaluate_week(
             week,
             weekly_points_by_player,

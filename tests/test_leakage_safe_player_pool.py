@@ -1,6 +1,7 @@
 from fantasy_engine.leakage_safe_player_pool import (
     build_season_totals,
     create_leakage_safe_player_pool,
+    create_player_key,
 )
 
 
@@ -44,7 +45,9 @@ def test_build_season_totals_combines_player_weeks():
 
     season_totals = build_season_totals(rows)
 
-    player_total = season_totals[("Test RB", "RB")]
+    player_total = season_totals[
+        create_player_key(rows[0])
+    ]
 
     assert player_total["fantasy_points"] == 15.0
 
@@ -78,7 +81,7 @@ def test_create_leakage_safe_player_pool_uses_previous_season_as_projection():
     assert players[0].actual_score == 120.0
 
 
-def test_create_leakage_safe_player_pool_excludes_players_missing_previous_season():
+def test_create_leakage_safe_player_pool_includes_players_missing_previous_season():
     projection_rows = []
     actual_rows = [
         create_test_row(
@@ -94,4 +97,6 @@ def test_create_leakage_safe_player_pool_excludes_players_missing_previous_seaso
         actual_rows=actual_rows,
     )
 
-    assert players == []
+    assert len(players) == 1
+    assert players[0].name == "Rookie WR"
+    assert players[0].history_missing is True

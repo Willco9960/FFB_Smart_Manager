@@ -1,12 +1,17 @@
+import random
+
+import pytest
 import torch
 
 from gpu_sim.full_season import create_synthetic_season_state, run_full_cuda_season
 from gpu_sim.policy_training import (
     evaluate_cuda_policy,
     evaluate_cuda_policy_population,
+    mutate_policy,
     prepare_cuda_scenario_bank,
     save_cuda_training_state,
     train_cuda_policy_population,
+    validate_cuda_training_state_contract,
 )
 from models.modular_manager_policy import ModularManagerPolicyNetwork
 
@@ -71,6 +76,43 @@ def test_cuda_policy_population_training_emits_generation_metrics():
     assert len(metrics) == 1
     assert metrics[0].generation == 1
     assert metrics[0].best_fitness >= 0.0
+
+
+def test_cuda_policy_self_play_uses_explicit_opponent_policies():
+    state = create_synthetic_season_state(
+        scenarios=1,
+        players=160,
+        weeks=17,
+        device=torch.device("cpu"),
+    )
+    policies = [ModularManagerPolicyNetwork() for _ in range(2)]
+
+    _, metrics = train_cuda_policy_population(
+        policies[0],
+        [state],
+        population_size=2,
+        generations=1,
+        selection_count=1,
+        scenario_repeats=1,
+        enable_transactions=False,
+        self_play=True,
+    )
+
+    assert len(metrics) == 1
+
+
+def test_adapter_mutation_preserves_shared_encoders():
+    policy = ModularManagerPolicyNetwork()
+    mutated = mutate_policy(policy, random.Random(3), strength=0.1, adapter_only=True)
+    assert torch.equal(
+        policy.player_encoder[0].weight,
+        mutated.player_encoder[0].weight,
+    )
+
+
+def test_resume_checkpoint_requires_matching_fitness_contract():
+    with pytest.raises(ValueError, match="missing fitness_contract_digest"):
+        validate_cuda_training_state_contract({})
 
 
 def test_cuda_policy_training_checkpoint_resumes_population(tmp_path):

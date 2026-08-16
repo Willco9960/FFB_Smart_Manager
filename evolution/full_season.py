@@ -15,6 +15,7 @@ from evolution.population import (
     split_population_into_leagues,
 )
 from fantasy_engine.draft import DraftAgent, run_snake_draft
+from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT, FitnessContract
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
 from fantasy_engine.playoffs import simulate_espn_six_team_playoffs
@@ -45,18 +46,27 @@ def calculate_full_season_fitness(
     playoff_wins: int,
     champion: bool,
     transaction_reward: float,
+    lineup_efficiency: float = 0.0,
+    replacement_value: float = 0.0,
+    invalid_actions: int = 0,
+    contract: FitnessContract = ESPN_FITNESS_CONTRACT,
 ) -> float:
-    fitness = (regular_season_wins * WEEKLY_WIN_REWARD) + (points_for * POINTS_FOR_WEIGHT)
+    fitness = (regular_season_wins * contract.weekly_win_reward) + (
+        points_for * contract.points_for_weight
+    )
 
     if playoff_seed is not None:
-        fitness += PLAYOFF_QUALIFICATION_REWARD
+        fitness += contract.playoff_qualification_reward
 
-    fitness += playoff_wins * PLAYOFF_WIN_REWARD
+    fitness += playoff_wins * contract.playoff_win_reward
 
     if champion:
-        fitness += CHAMPIONSHIP_REWARD
+        fitness += contract.championship_reward
 
-    fitness += transaction_reward * TRANSACTION_REWARD_WEIGHT
+    fitness += transaction_reward * contract.transaction_reward_weight
+    fitness += lineup_efficiency * contract.lineup_efficiency_weight
+    fitness += replacement_value * contract.replacement_value_weight
+    fitness -= invalid_actions * contract.invalid_action_penalty
 
     return round(fitness, 2)
 
@@ -97,11 +107,15 @@ def evaluate_full_season_battle_royale(
     transaction_value_model: TransactionValueNetwork | None = None,
     season: int = 0,
     transaction_mode: TransactionMode = "hybrid",
+    fitness_contract: FitnessContract | None = None,
 ) -> list[EvaluatedAgent]:
     if len(agents) % len(league.teams) != 0:
         raise ValueError("Population size must be divisible by the league team count.")
     if transaction_mode not in TRANSACTION_MODES:
         raise ValueError(f"Unknown transaction mode: {transaction_mode}")
+    if fitness_contract is not None:
+        rules = fitness_contract.league_rules
+        lineup_rules = fitness_contract.lineup_rules
 
     shuffled_agents = list(agents)
     random.Random(seed).shuffle(shuffled_agents)
@@ -230,6 +244,7 @@ def evaluate_full_season_battle_royale(
                 playoff_wins=playoff_wins,
                 champion=champion,
                 transaction_reward=transaction_reward,
+                contract=fitness_contract or ESPN_FITNESS_CONTRACT,
             )
             evaluated_agents.append(
                 EvaluatedAgent(

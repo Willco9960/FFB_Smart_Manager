@@ -53,4 +53,6 @@ class ProjectionEnsemble:
             team=player.team,
             projected_score=prediction.expected_points,
             actual_score=player.actual_score,
+            player_id=player.player_id,
+            history_missing=player.history_missing,
         )

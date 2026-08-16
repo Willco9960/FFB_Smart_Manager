@@ -2,9 +2,9 @@
 
 The module keeps league state in tensors and supports draft, weekly projected
 lineups, inverse-standings waivers, mutually beneficial one-for-one trades,
-head-to-head standings, and the ESPN six-team playoff bracket. Transaction
-decisions remain a fast tensorized approximation of the CPU agents; the CPU
-engine remains the behavioral authority until exact action parity is proven.
+head-to-head standings, and the ESPN six-team playoff bracket. The shared
+fitness contract supplies starter-slot counts, K/DST legality, and reward
+weights; CPU replay remains the outcome-level reference for transactions.
 """
 
 from __future__ import annotations
@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 
 import torch
 
-from gpu_sim.policy_draft import run_batched_policy_draft
+from fantasy_engine.fitness_contract import FitnessContract
+from gpu_sim.policy_draft import _build_player_features, run_batched_policy_draft
 from gpu_sim.tensorized_draft import (
     DraftBatchResult,
     run_batched_roster_aware_draft,
@@ -43,6 +44,35 @@ class CudaSeasonState:
     trade_counts: list[torch.Tensor] = field(default_factory=list)
     playoff_wins: torch.Tensor | None = None
     champions: torch.Tensor | None = None
+    lineup_policy_gains: list[torch.Tensor] = field(default_factory=list)
+    waiver_policy_gains: list[torch.Tensor] = field(default_factory=list)
+    trade_policy_gains: list[torch.Tensor] = field(default_factory=list)
+    active_policy_network: torch.nn.Module | None = field(default=None, repr=False)
+    active_team_policy_networks: list[torch.nn.Module] | None = field(default=None, repr=False)
+    lineup_position_rules: tuple[tuple[int, ...], ...] = (
+        (0,), (1,), (1,), (2,), (2,), (3,), (1, 2, 3)
+    )
+
+    def _score_batched_lineups(
+        self,
+        selection_points: torch.Tensor,
+        actual_points: torch.Tensor,
+        positions_or_rosters: torch.Tensor,
+        rosters: torch.Tensor | None = None,
+    ):
+        rosters = positions_or_rosters if rosters is None else rosters
+        return score_batched_lineups(
+            selection_points,
+            actual_points,
+            self.positions,
+            rosters,
+            lineup_position_rules=self.lineup_position_rules,
+        )
+
+    def _team_policy(self, team_index: int) -> torch.nn.Module | None:
+        if self.active_team_policy_networks is not None:
+            return self.active_team_policy_networks[team_index]
+        return self.active_policy_network
 
     def __post_init__(self) -> None:
         if self.draft_projections.ndim != 2:
@@ -119,70 +149,187 @@ class CudaSeasonState:
     ) -> DraftBatchResult:
         """Draft rosters and update free-agent masks.
 
-        With ``policy_network`` supplied, one rotating team per scenario is
-        controlled by the neural policy while the remaining teams use the
-        tensorized projection-best baseline.
+        With ``policy_network`` supplied, the selected team(s) are controlled
+        by the neural policy while the remaining teams use the tensorized
+        projection-best baseline or archived team policies.
         """
 
         if self.roster_size * self.team_count > self.player_count:
             raise ValueError("Not enough players to fill every roster.")
         if policy_network is None:
+            if len(self.lineup_position_rules) == 9:
+                position_minimums = (1, 4, 4, 1, 1, 1)
+                position_maximums = (2, 6, 7, 3, 1, 1)
+            else:
+                position_minimums = (1, 4, 4, 1)
+                position_maximums = (2, 6, 7, 3)
             result = run_batched_roster_aware_draft(
                 self.draft_projections,
-                self.positions,
+                (
+                    self.positions
+                    if len(self.lineup_position_rules) == 9
+                    else self.positions.clamp_max(3)
+                ),
                 team_count=self.team_count,
                 rounds=self.roster_size,
+                position_minimums=position_minimums,
+                position_maximums=position_maximums,
             )
         else:
             result = run_batched_policy_draft(
                 self.draft_projections,
                 self.positions,
                 policy_network,
+                team_policy_networks=self.active_team_policy_networks,
                 policy_team_indices=policy_team_indices,
                 team_count=self.team_count,
                 rounds=self.roster_size,
                 anchor_weight=draft_anchor_weight,
             )
-        self.rosters = result.player_indices
+        # The policy draft kernel runs under inference_mode for throughput;
+        # clone before the season mutates rosters through waivers/trades.
+        self.rosters = result.player_indices.clone()
         self.available = torch.ones_like(self.available)
         self.available.scatter_(1, self.rosters.reshape(self.scenario_count, -1), False)
         return result
 
     def projected_lineup_scores(self, week: int) -> torch.Tensor:
         self._validate_week(week)
-        return score_batched_lineups(
+        return self._score_batched_lineups(
             self.weekly_projections[:, week],
             self.weekly_projections[:, week],
             self.positions,
             self._require_rosters(),
         ).scores
 
-    def score_week(self, week: int, matchups: torch.Tensor | None = None) -> torch.Tensor:
+    def _policy_adjusted_points(
+        self,
+        points: torch.Tensor,
+        policy_network: torch.nn.Module | None,
+        decision_type: str,
+        team_index: int,
+        policy_override: torch.nn.Module | None = None,
+    ) -> torch.Tensor:
+        """Apply a bounded policy tie-breaker while preserving point scale."""
+        policy_network = policy_override or policy_network
+        if policy_network is None:
+            return points
+        available = self.available if self.available is not None else torch.ones(
+            (self.scenario_count, self.player_count), dtype=torch.bool, device=self.device
+        )
+        rosters = self._require_rosters()
+        player_features, state_features = _build_player_features(
+            projected_points=points.masked_fill(~available, 0.0),
+            positions=self.positions,
+            available=available,
+            rosters=rosters,
+            team_index=team_index,
+        )
+        with torch.inference_mode():
+            scores = policy_network(
+                player_features.reshape(-1, player_features.shape[-1]),
+                state_features.reshape(-1, state_features.shape[-1]),
+                decision_type=decision_type,
+            ).reshape(self.scenario_count, self.player_count)
+        scores = scores.to(points.dtype)
+        scores = (scores - scores.mean(dim=1, keepdim=True)) / scores.std(
+            dim=1, keepdim=True
+        ).clamp_min(1e-4)
+        return points + (0.25 * scores)
+
+    def score_week(
+        self,
+        week: int,
+        matchups: torch.Tensor | None = None,
+        policy_network: torch.nn.Module | None = None,
+    ) -> torch.Tensor:
         """Score legal projected lineups and update head-to-head standings."""
 
         self._validate_week(week)
-        scores = score_batched_lineups(
-            self.weekly_projections[:, week],
-            self.weekly_actual_points[:, week],
-            self.positions,
-            self._require_rosters(),
-        ).scores
+        policy_network = policy_network or self.active_policy_network
+        projections = self.weekly_projections[:, week]
+        policy_projections = (
+            torch.stack(
+                [
+                    self._policy_adjusted_points(
+                        projections,
+                        policy_network,
+                        "lineup",
+                        team_index,
+                        self._team_policy(team_index),
+                    )
+                    for team_index in range(self.team_count)
+                ],
+                dim=1,
+            )
+            if policy_network is not None
+            else projections.unsqueeze(1).expand(-1, self.team_count, -1)
+        )
+        scores = torch.stack(
+            [
+                self._score_batched_lineups(
+                    policy_projections[:, team_index],
+                    self.weekly_actual_points[:, week],
+                    self.positions,
+                    self._require_rosters()[:, team_index : team_index + 1],
+                ).scores[:, 0]
+                for team_index in range(self.team_count)
+            ],
+            dim=1,
+        )
         self.points_for += scores
         if matchups is None:
             matchups = self.default_matchups(week)
         self._record_matchups(scores, matchups)
         self.weekly_scores.append(scores)
+        if policy_network is not None:
+            baseline = torch.stack(
+                [
+                    self._score_batched_lineups(
+                        projections,
+                        self.weekly_actual_points[:, week],
+                        self.positions,
+                        self._require_rosters()[:, team_index : team_index + 1],
+                    ).scores[:, 0]
+                    for team_index in range(self.team_count)
+                ],
+                dim=1,
+            )
+            self.lineup_policy_gains.append(scores - baseline)
         return scores
 
-    def apply_waivers(self, week: int, minimum_improvement: float = 0.5) -> torch.Tensor:
+    def apply_waivers(
+        self,
+        week: int,
+        minimum_improvement: float = 0.5,
+        policy_network: torch.nn.Module | None = None,
+    ) -> torch.Tensor:
         """Apply one projection-positive waiver per inverse-standings rank."""
 
         self._validate_week(week)
+        policy_network = policy_network or self.active_policy_network
         batch = torch.arange(self.scenario_count, device=self.device)
         ranking_value = self.wins.to(torch.float32) * 100000.0 + self.points_for
         priority = torch.argsort(ranking_value, dim=1, descending=False)
         accepted_count = torch.zeros(self.scenario_count, dtype=torch.int32, device=self.device)
         projections = self.weekly_projections[:, week]
+        policy_projection_by_team = (
+            torch.stack(
+                [
+                    self._policy_adjusted_points(
+                        projections,
+                        policy_network,
+                        "waiver",
+                        team_index,
+                        self._team_policy(team_index),
+                    )
+                    for team_index in range(self.team_count)
+                ],
+                dim=1,
+            )
+            if policy_network is not None
+            else projections.unsqueeze(1).expand(-1, self.team_count, -1)
+        )
 
         # Select one claim per inverse-standings rank while updating a local
         # availability mask. Lineup legality and improvement are then scored
@@ -193,11 +340,12 @@ class CudaSeasonState:
         add_players_by_rank = torch.empty_like(priority)
         drop_slots_by_rank = torch.empty_like(priority)
         for rank in range(self.team_count):
-            add_scores = projections.masked_fill(~working_available, float("-inf"))
+            team_projections = policy_projection_by_team[batch, priority[:, rank]]
+            add_scores = team_projections.masked_fill(~working_available, float("-inf"))
             add_players = add_scores.argmax(dim=1)
             add_players_by_rank[:, rank] = add_players
             working_available.scatter_(1, add_players.unsqueeze(1), False)
-            current_values = projections.gather(
+            current_values = team_projections.gather(
                 1,
                 current_rosters_by_rank[:, rank],
             )
@@ -219,22 +367,16 @@ class CudaSeasonState:
             1,
             self.roster_size,
         )
-        flat_projections = (
-            projections.unsqueeze(1)
-            .expand(
-                -1,
-                self.team_count,
-                -1,
-            )
-            .reshape(self.scenario_count * self.team_count, self.player_count)
+        flat_projections = policy_projection_by_team[batch.unsqueeze(1), priority].reshape(
+            self.scenario_count * self.team_count, self.player_count
         )
-        current_scores = score_batched_lineups(
+        current_scores = self._score_batched_lineups(
             flat_projections,
             flat_projections,
             self.positions,
             flat_rosters,
         ).scores.reshape(self.scenario_count, self.team_count)
-        candidate_scores = score_batched_lineups(
+        candidate_scores = self._score_batched_lineups(
             flat_projections,
             flat_projections,
             self.positions,
@@ -244,6 +386,9 @@ class CudaSeasonState:
             candidate_scores - current_scores >= minimum_improvement
         )
         accepted_count = accepted.sum(dim=1).to(torch.int32)
+        counterfactual_gain = (
+            (candidate_scores - current_scores).clamp_min(0.0) * accepted
+        ).sum(dim=1)
 
         for rank in range(self.team_count):
             update_mask = accepted[:, rank]
@@ -265,24 +410,54 @@ class CudaSeasonState:
             self.available[batch[update_mask], old_players[update_mask]] = True
 
         self.waiver_counts.append(accepted_count)
+        if policy_network is not None:
+            self.waiver_policy_gains.append(counterfactual_gain)
         return accepted_count
 
     def apply_trades(
-        self, week: int, top_k: int = 3, minimum_improvement: float = 0.5
+        self,
+        week: int,
+        top_k: int = 3,
+        minimum_improvement: float = 0.5,
+        policy_network: torch.nn.Module | None = None,
     ) -> torch.Tensor:
         """Apply the best mutually beneficial one-for-one trade per scenario."""
 
         self._validate_week(week)
+        policy_network = policy_network or self.active_policy_network
         if self.team_count < 2:
             return torch.zeros(self.scenario_count, dtype=torch.int32, device=self.device)
         projections = self.weekly_projections[:, week]
+        policy_projection_by_team = (
+            torch.stack(
+                [
+                    self._policy_adjusted_points(
+                        projections,
+                        policy_network,
+                        "trade",
+                        team_index,
+                        self._team_policy(team_index),
+                    )
+                    for team_index in range(self.team_count)
+                ],
+                dim=1,
+            )
+            if policy_network is not None
+            else projections.unsqueeze(1).expand(-1, self.team_count, -1)
+        )
         rosters = self._require_rosters()
-        baseline = score_batched_lineups(
-            projections,
-            projections,
-            self.positions,
-            rosters,
-        ).scores
+        baseline = torch.stack(
+            [
+                self._score_batched_lineups(
+                    policy_projection_by_team[:, team_index],
+                    policy_projection_by_team[:, team_index],
+                    self.positions,
+                    rosters[:, team_index : team_index + 1],
+                ).scores[:, 0]
+                for team_index in range(self.team_count)
+            ],
+            dim=1,
+        )
         top_k = min(top_k, self.roster_size)
 
         pair_indices = torch.triu_indices(
@@ -296,7 +471,7 @@ class CudaSeasonState:
         combos = top_k * top_k
         pair_rosters_a = rosters[:, pair_a]
         pair_rosters_b = rosters[:, pair_b]
-        pair_projection = projections.unsqueeze(1).expand(-1, pair_count, -1)
+        pair_projection = policy_projection_by_team[:, pair_a]
         values_a = pair_projection.gather(2, pair_rosters_a)
         values_b = pair_projection.gather(2, pair_rosters_b)
         _, top_slots_a = values_a.topk(top_k, dim=2)
@@ -330,11 +505,21 @@ class CudaSeasonState:
         flat_rows = torch.arange(flat_a.shape[0], device=self.device)
         flat_a[flat_rows, a_slots.reshape(-1)] = b_players.reshape(-1)
         flat_b[flat_rows, b_slots.reshape(-1)] = a_players.reshape(-1)
-        repeated_projection = projections.repeat_interleave(pair_count * combos, dim=0)
+        repeated_projection = (
+            pair_projection.unsqueeze(2)
+            .expand(-1, -1, combos, -1)
+            .reshape(-1, self.player_count)
+        )
+        repeated_projection_b = (
+            policy_projection_by_team[:, pair_b]
+            .unsqueeze(2)
+            .expand(-1, -1, combos, -1)
+            .reshape(-1, self.player_count)
+        )
         score_a = (
-            score_batched_lineups(
-                repeated_projection,
-                repeated_projection,
+            self._score_batched_lineups(
+                repeated_projection_b,
+                repeated_projection_b,
                 self.positions,
                 flat_a.unsqueeze(1),
             )
@@ -342,7 +527,7 @@ class CudaSeasonState:
             .reshape(self.scenario_count, pair_count, combos)
         )
         score_b = (
-            score_batched_lineups(
+            self._score_batched_lineups(
                 repeated_projection,
                 repeated_projection,
                 self.positions,
@@ -380,6 +565,8 @@ class CudaSeasonState:
         rosters[batch[accepted], best_b[accepted], best_slot_b[accepted]] = old_a[accepted]
         accepted_count = accepted.to(torch.int32)
         self.trade_counts.append(accepted_count)
+        if policy_network is not None:
+            self.trade_policy_gains.append(best_gain.clamp_min(0.0))
         return accepted_count
 
     def run_playoffs(self) -> torch.Tensor:
@@ -465,12 +652,37 @@ class CudaSeasonState:
         # ``projected_score`` when no projection service is supplied. Keep this
         # distinction explicit: regular-season weeks use rolling weekly
         # projections, while playoff parity uses draft projections.
-        return score_batched_lineups(
-            self.draft_projections,
-            self.weekly_actual_points[:, week],
-            self.positions,
-            self._require_rosters(),
-        ).scores
+        projections = self.draft_projections
+        policy_network = self.active_policy_network
+        policy_projections = (
+            torch.stack(
+                [
+                    self._policy_adjusted_points(
+                        projections,
+                        policy_network,
+                        "lineup",
+                        team_index,
+                        self._team_policy(team_index),
+                    )
+                    for team_index in range(self.team_count)
+                ],
+                dim=1,
+            )
+            if policy_network is not None
+            else projections.unsqueeze(1).expand(-1, self.team_count, -1)
+        )
+        return torch.stack(
+            [
+                self._score_batched_lineups(
+                    policy_projections[:, team_index],
+                    self.weekly_actual_points[:, week],
+                    self.positions,
+                    self._require_rosters()[:, team_index : team_index + 1],
+                ).scores[:, 0]
+                for team_index in range(self.team_count)
+            ],
+            dim=1,
+        )
 
     def default_matchups(self, week: int = 0) -> torch.Tensor:
         """Return the CPU engine's rotating round-robin pairings."""
@@ -552,25 +764,49 @@ def run_full_cuda_season(
     *,
     enable_transactions: bool = True,
     policy_network: torch.nn.Module | None = None,
+    team_policy_networks: list[torch.nn.Module] | None = None,
     policy_team_indices: torch.Tensor | None = None,
     draft_anchor_weight: float = 0.20,
+    fitness_contract: FitnessContract | None = None,
 ) -> CudaSeasonState:
     """Execute draft, transactions, regular season, and playoffs.
 
-    ``policy_network`` enables a real candidate-vs-baseline training episode;
-    transaction stages remain the existing tensorized waiver/trade engine.
+    ``policy_network`` enables policy-controlled action heads for draft,
+    lineup, waiver, and trade decisions. The exact CPU transaction replay is
+    still the authority for promotion comparisons.
     """
 
+    if fitness_contract is not None:
+        position_ids = {
+            "QB": 0,
+            "RB": 1,
+            "WR": 2,
+            "TE": 3,
+            "DST": 4,
+            "DEF": 4,
+            "D/ST": 4,
+            "K": 5,
+        }
+        state.lineup_position_rules = tuple(
+            tuple(position_ids[position] for position in slot.eligible_positions)
+            for slot in fitness_contract.lineup_rules
+            for _ in range(slot.count)
+        )
+    if team_policy_networks is not None:
+        state.active_team_policy_networks = team_policy_networks
+        state.active_policy_network = team_policy_networks[0]
     state.draft(
-        policy_network=policy_network,
+        policy_network=policy_network
+        or (team_policy_networks[0] if team_policy_networks else None),
         policy_team_indices=policy_team_indices,
         draft_anchor_weight=draft_anchor_weight,
     )
+    state.active_policy_network = policy_network
     regular_season_weeks = min(14, state.week_count - 3)
     for week in range(regular_season_weeks):
         if enable_transactions:
-            state.apply_waivers(week)
-            state.apply_trades(week)
-        state.score_week(week)
+            state.apply_waivers(week, policy_network=policy_network)
+            state.apply_trades(week, policy_network=policy_network)
+        state.score_week(week, policy_network=policy_network)
     state.run_playoffs()
     return state

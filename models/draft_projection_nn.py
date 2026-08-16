@@ -4,7 +4,8 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from fantasy_engine.projection_dataset import SeasonProjectionExample
+from fantasy_engine.projection_dataset import SeasonProjectionExample, get_feature_names
+from models.feature_manifest import create_feature_manifest
 
 DEFAULT_MODEL_PATH = Path("data/models/draft_projection_network.pt")
 
@@ -192,6 +193,14 @@ def save_projection_network(
     training_seasons: tuple[int, ...] | None = None,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = create_feature_manifest(
+        feature_names=tuple(get_feature_names()),
+        means=training_result.feature_scaler.means,
+        standard_deviations=training_result.feature_scaler.standard_deviations,
+        decision_cutoff=(
+            f"before_{max(training_seasons)}" if training_seasons else ""
+        ),
+    )
     torch.save(
         {
             "input_size": len(training_result.feature_scaler.means),
@@ -202,6 +211,10 @@ def save_projection_network(
             "target_standard_deviation": training_result.target_standard_deviation,
             "training_seasons": list(training_seasons or []),
             "max_training_season": max(training_seasons) if training_seasons else None,
+            "best_validation_loss": training_result.best_validation_loss,
+            "epochs_trained": training_result.epochs_trained,
+            "feature_manifest": manifest.to_dict(),
+            "feature_manifest_digest": manifest.digest(),
         },
         output_path,
     )

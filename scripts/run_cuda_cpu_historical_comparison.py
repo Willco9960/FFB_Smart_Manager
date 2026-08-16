@@ -53,14 +53,18 @@ def main() -> None:
             players=args.players,
             device=args.device,
         )
-        cpu_started = perf_counter()
-        cpu = summarize_cpu(inputs, args.transactions)
-        cpu_elapsed = perf_counter() - cpu_started
         cuda_started = perf_counter()
         cuda = summarize_cuda(inputs, args.transactions)
         if inputs.state.device.type == "cuda":
             torch.cuda.synchronize(inputs.state.device)
         cuda_elapsed = perf_counter() - cuda_started
+        cpu_started = perf_counter()
+        cpu = summarize_cpu(
+            inputs,
+            args.transactions,
+            roster_indices=inputs.state.rosters[0].detach().cpu().tolist(),
+        )
+        cpu_elapsed = perf_counter() - cpu_started
         results.append(
             {
                 "season": season,

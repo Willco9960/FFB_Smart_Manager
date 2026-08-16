@@ -7,6 +7,10 @@ class ESPNLeagueRules:
     regular_season_weeks: int = 14
     playoff_team_count: int = 6
     playoff_bye_team_count: int = 2
+    tie_breaker: str = "points_for"
+    waiver_order: str = "inverse_standings"
+    trade_format: str = "one_for_one_mutually_beneficial"
+    postponed_game_policy: str = "zero_until_replayed"
 
 
 ESPN_TEN_TEAM_DEFAULT_RULES = ESPNLeagueRules()

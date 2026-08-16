@@ -201,6 +201,9 @@ def score_batched_lineups(
     actual_points: torch.Tensor,
     positions: torch.Tensor,
     rosters: torch.Tensor,
+    lineup_position_rules: tuple[tuple[int, ...], ...] = (
+        (0,), (1,), (1,), (2,), (2,), (3,), (1, 2, 3)
+    ),
 ) -> LineupBatchResult:
     """Select legal offensive lineups by projections and score actual points."""
 
@@ -228,7 +231,7 @@ def score_batched_lineups(
     selected_indices: list[torch.Tensor] = []
     selected_scores: list[torch.Tensor] = []
 
-    for eligible_positions in ((0,), (1,), (1,), (2,), (2,), (3,), (1, 2, 3)):
+    for eligible_positions in lineup_position_rules:
         indices, scores = _select_best_slot(
             roster_selection_scores,
             roster_actual_scores,

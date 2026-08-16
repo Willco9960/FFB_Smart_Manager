@@ -1,7 +1,9 @@
 import pytest
 import torch
 
+from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT
 from gpu_sim.full_season import create_synthetic_season_state, run_full_cuda_season
+from models.modular_manager_policy import ModularManagerPolicyNetwork
 
 
 def test_cuda_season_draft_and_weekly_scoring_have_expected_shapes():
@@ -61,6 +63,37 @@ def test_full_cuda_season_pipeline_runs_end_to_end():
     assert len(result.waiver_counts) == 14
     assert len(result.trade_counts) == 14
     assert result.champions is not None
+
+
+def test_policy_controlled_full_season_records_all_in_season_heads():
+    state = create_synthetic_season_state(scenarios=1, players=200)
+
+    run_full_cuda_season(
+        state,
+        policy_network=ModularManagerPolicyNetwork(),
+    )
+
+    assert len(state.lineup_policy_gains) == 14
+    assert len(state.waiver_policy_gains) == 14
+    assert len(state.trade_policy_gains) == 14
+
+
+def test_full_contract_draft_reserves_kicker_and_defense_slots():
+    generator = torch.Generator().manual_seed(7)
+    positions = torch.tensor(([0, 1, 2, 3, 4, 5] * 40)[:200])
+    state = create_synthetic_season_state(scenarios=1, players=200)
+    state.positions = positions
+    state.draft_projections = torch.rand((1, 200), generator=generator) * 100.0
+    state.weekly_projections = torch.rand((1, 17, 200), generator=generator) * 20.0
+    state.weekly_actual_points = torch.rand((1, 17, 200), generator=generator) * 20.0
+
+    # The public full-season entrypoint expands contract slot counts to the
+    # nine legal ESPN starter slots before scoring.
+    run_full_cuda_season(state, enable_transactions=False, fitness_contract=ESPN_FITNESS_CONTRACT)
+    roster_positions = state.positions[state.rosters[0]]
+    assert (roster_positions == 4).sum(dim=1).min().item() >= 1
+    assert (roster_positions == 5).sum(dim=1).min().item() >= 1
+    assert len(state.lineup_position_rules) == 9
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")

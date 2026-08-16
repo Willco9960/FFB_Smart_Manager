@@ -8,6 +8,20 @@ from fantasy_engine.team import Team
 DEFAULT_ROSTER_LIMIT = 16
 
 
+def player_identity_keys(player: Player) -> tuple[tuple[str, str], ...]:
+    """Return stable and legacy lookup keys for attribution.
+
+    Historical rows can rename a player or change teams while retaining the
+    same nflverse ID.  The legacy name/position key remains as a compatibility
+    fallback for hand-built fixtures and older data snapshots.
+    """
+    keys: list[tuple[str, str]] = []
+    if player.player_id:
+        keys.append((player.player_id, player.position))
+    keys.append((player.name, player.position))
+    return tuple(dict.fromkeys(keys))
+
+
 @dataclass(frozen=True)
 class WaiverClaim:
     team_name: str
@@ -94,8 +108,12 @@ class TransactionValueTracker:
             for team_name, incoming_players, outgoing_players in team_sides:
                 incoming_points = round(
                     sum(
-                        weekly_points_by_player.get(
-                            (player.name, player.position),
+                        next(
+                            (
+                                weekly_points_by_player[key]
+                                for key in player_identity_keys(player)
+                                if key in weekly_points_by_player
+                            ),
                             0.0,
                         )
                         for player in incoming_players
@@ -104,8 +122,12 @@ class TransactionValueTracker:
                 )
                 outgoing_points = round(
                     sum(
-                        weekly_points_by_player.get(
-                            (player.name, player.position),
+                        next(
+                            (
+                                weekly_points_by_player[key]
+                                for key in player_identity_keys(player)
+                                if key in weekly_points_by_player
+                            ),
                             0.0,
                         )
                         for player in outgoing_players

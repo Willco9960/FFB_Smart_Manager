@@ -21,21 +21,33 @@ def get_weekly_points_by_player(
     performances: list[WeeklyPlayerPerformance],
     week: int,
 ) -> dict[tuple[str, str], float]:
-    return {
-        (performance.player_name, performance.position): performance.fantasy_points
-        for performance in performances
-        if performance.week == week
-    }
+    points = {}
+    for performance in performances:
+        if performance.week != week:
+            continue
+        points[(performance.player_id, performance.position)] = performance.fantasy_points
+        points[(performance.player_name, performance.position)] = performance.fantasy_points
+    return points
 
 
 def create_weekly_scored_roster(
     roster: list[Player],
     weekly_points_by_player: dict[tuple[str, str], float],
 ) -> list[Player]:
+    def score_for(player: Player) -> float:
+        keys = []
+        if player.player_id:
+            keys.append((player.player_id, player.position))
+        keys.append((player.name, player.position))
+        return next(
+            (weekly_points_by_player[key] for key in keys if key in weekly_points_by_player),
+            0.0,
+        )
+
     return [
         replace(
             player,
-            actual_score=weekly_points_by_player.get((player.name, player.position), 0.0),
+            actual_score=score_for(player),
         )
         for player in roster
     ]

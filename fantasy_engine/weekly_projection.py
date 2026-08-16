@@ -15,8 +15,17 @@ def get_player_history_before_week(
     return [
         performance
         for performance in performances
-        if performance.player_name == player.name
-        and performance.position == player.position
+        if (
+            (
+                player.player_id is not None
+                and performance.player_id == player.player_id
+            )
+            or (
+                player.player_id is None
+                and performance.player_name == player.name
+                and performance.position == player.position
+            )
+        )
         and performance.week < week
     ]
 

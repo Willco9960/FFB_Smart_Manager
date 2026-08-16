@@ -7,7 +7,11 @@ from fantasy_engine.fantasy_points import (
     calculate_fantasy_points,
 )
 from fantasy_engine.historical_loader import RAW_DATA_DIR, load_player_stats
-from fantasy_engine.historical_player_pool import DEFENSIVE_POSITIONS
+from fantasy_engine.historical_player_pool import (
+    DEFENSIVE_POSITIONS,
+    create_team_defense_rows,
+    get_player_id,
+)
 from fantasy_engine.leakage_safe_player_pool import build_season_totals
 
 WEEKLY_PROJECTION_FEATURE_NAMES = (
@@ -38,8 +42,15 @@ WEEKLY_PROJECTION_FEATURE_NAMES = (
     "team_recent_rushing_attempts",
     "opponent_recent_defensive_points",
     "season_week_progress",
+    "history_missing",
+    "injury_status_signal",
+    "qb_injury_signal",
+    "game_total",
+    "spread_line",
+    "implied_team_total",
+    "opponent_matchup_strength",
 )
-ELIGIBLE_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
+ELIGIBLE_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DST"}
 
 
 @dataclass(frozen=True)
@@ -50,6 +61,7 @@ class WeeklyProjectionExample:
     week: int
     features: tuple[float, ...]
     target_points: float
+    player_id: str | None = None
 
 
 def get_week(row: dict[str, str]) -> int:
@@ -57,7 +69,7 @@ def get_week(row: dict[str, str]) -> int:
 
 
 def get_player_key(row: dict[str, str]) -> tuple[str, str]:
-    return (row.get("player_name", ""), row.get("position", ""))
+    return (get_player_id(row), row.get("position", ""))
 
 
 def get_team(row: dict[str, str]) -> str:
@@ -65,7 +77,34 @@ def get_team(row: dict[str, str]) -> str:
 
 
 def get_float(row: dict[str, str], field_name: str) -> float:
-    return float(row.get(field_name, "0") or "0")
+    try:
+        return float(row.get(field_name, "0") or "0")
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_optional_signal(row: dict[str, str], *field_names: str) -> float:
+    for field_name in field_names:
+        value = row.get(field_name, "")
+        if value not in ("", None):
+            return get_float(row, field_name)
+    return 0.0
+
+
+def get_injury_status_signal(row: dict[str, str]) -> float:
+    """Encode pre-game availability without peeking at the target score.
+
+    Upstream ESPN/injury feeds can provide one of the status columns below;
+    historical nflverse rows often do not, in which case the feature is zero.
+    """
+    status = str(
+        row.get("injury_status", row.get("status", row.get("practice_status", "")))
+    ).strip().lower()
+    if status in {"out", "ir", "inactive", "doubtful"}:
+        return 1.0
+    if status in {"questionable", "limited", "probable"}:
+        return 0.5
+    return get_optional_signal(row, "injury_status_signal")
 
 
 def get_row_yards(row: dict[str, str]) -> float:
@@ -357,6 +396,8 @@ def create_weekly_projection_examples(
 
     for target_season in target_seasons:
         rows = season_rows_by_season.get(target_season, [])
+        if not any(row.get("position") == "DST" for row in rows):
+            rows = [*rows, *create_team_defense_rows(rows)]
         prior_rows = season_rows_by_season.get(target_season - 1, [])
         older_rows = season_rows_by_season.get(target_season - 2, [])
         prior_totals = build_season_totals(
@@ -382,11 +423,10 @@ def create_weekly_projection_examples(
 
             player_key = get_player_key(row)
             prior_player = prior_totals.get(player_key)
-
-            if prior_player is None:
-                continue
-
-            previous_points = float(prior_player["fantasy_points"])
+            history_missing = prior_player is None
+            previous_points = (
+                float(prior_player["fantasy_points"]) if prior_player is not None else 0.0
+            )
             older_player = older_totals.get(player_key)
             older_points = previous_points
 
@@ -415,7 +455,7 @@ def create_weekly_projection_examples(
                 week,
             )
             target_team = get_team(row)
-            prior_team = str(prior_player["team"])
+            prior_team = str(prior_player["team"]) if prior_player is not None else ""
             team_opportunities = get_recent_team_opportunities(
                 team_week_opportunities,
                 target_team,
@@ -451,10 +491,22 @@ def create_weekly_projection_examples(
                         carry_share,
                         team_opportunities["pass_attempts"],
                         team_opportunities["rushing_attempts"],
-                        opponent_defensive_points,
+                        sum(opponent_signals),
                         float(week) / 18.0,
+                        float(history_missing),
+                        get_injury_status_signal(row),
+                        get_optional_signal(row, "qb_injury_signal", "starting_qb_injury"),
+                        get_optional_signal(row, "game_total", "over_under", "vegas_total"),
+                        get_optional_signal(row, "spread_line", "spread"),
+                        get_optional_signal(
+                            row,
+                            "implied_team_total",
+                            "team_implied_total",
+                        ),
+                        opponent_defensive_points,
                     ),
                     target_points=calculate_fantasy_points(row, scoring_settings),
+                    player_id=get_player_id(row),
                 )
             )
 

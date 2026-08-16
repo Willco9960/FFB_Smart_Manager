@@ -12,6 +12,7 @@ from models.draft_projection_nn import (
     predict_points,
     train_projection_network,
 )
+from models.feature_manifest import create_feature_manifest
 
 DEFAULT_WEEKLY_MODEL_PATH = Path("data/models/weekly_projection_network.pt")
 DEFAULT_WEEKLY_SEASON_LENGTH = 14
@@ -27,6 +28,7 @@ def convert_weekly_examples(
             season=example.season,
             features=example.features,
             target_points=example.target_points,
+            player_id=example.player_id,
         )
         for example in examples
     ]
@@ -127,6 +129,14 @@ def save_weekly_projection_network(
     training_seasons: tuple[int, ...] | None = None,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = create_feature_manifest(
+        feature_names=tuple(WEEKLY_PROJECTION_FEATURE_NAMES),
+        means=training_result.feature_scaler.means,
+        standard_deviations=training_result.feature_scaler.standard_deviations,
+        decision_cutoff=(
+            f"before_{max(training_seasons)}" if training_seasons else ""
+        ),
+    )
     torch.save(
         {
             "input_size": len(training_result.feature_scaler.means),
@@ -139,6 +149,10 @@ def save_weekly_projection_network(
             "neural_weights_by_position": neural_weights_by_position or {},
             "training_seasons": list(training_seasons or []),
             "max_training_season": max(training_seasons) if training_seasons else None,
+            "best_validation_loss": training_result.best_validation_loss,
+            "epochs_trained": training_result.epochs_trained,
+            "feature_manifest": manifest.to_dict(),
+            "feature_manifest_digest": manifest.digest(),
         },
         output_path,
     )

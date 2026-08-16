@@ -20,6 +20,7 @@ from models.draft_projection_nn import (
     ProjectionTrainingResult,
     predict_points,
 )
+from models.feature_manifest import validate_checkpoint_manifest, validate_feature_names
 from models.projection_ensemble import ProjectionPrediction, combine_predictions
 from models.weekly_projection_nn import (
     calculate_weekly_heuristic_projection,
@@ -52,6 +53,8 @@ class WeeklyNeuralProjectionService:
         use_calibrated_weights: bool = False,
     ) -> "WeeklyNeuralProjectionService":
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+        validate_checkpoint_manifest(checkpoint)
+        validate_feature_names(checkpoint, tuple(WEEKLY_PROJECTION_FEATURE_NAMES))
         model = DraftProjectionNetwork(input_size=checkpoint["input_size"])
         model.load_state_dict(checkpoint["state_dict"])
         feature_scaler = FeatureScaler(
@@ -80,7 +83,7 @@ class WeeklyNeuralProjectionService:
         }
         applied_weights = neural_weights_by_position if use_calibrated_weights else {}
         prediction_map = {
-            (example.week, example.player_name, example.position): round(
+            (example.week, example.player_id or example.player_name, example.position): round(
                 max(
                     0.0,
                     (
@@ -107,7 +110,9 @@ class WeeklyNeuralProjectionService:
         performances: list[WeeklyPlayerPerformance],
         week: int,
     ) -> float:
-        prediction = self.predictions.get((week, player.name, player.position))
+        prediction = self.predictions.get(
+            (week, player.player_id or player.name, player.position)
+        )
 
         if prediction is not None:
             return prediction
