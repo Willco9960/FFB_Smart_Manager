@@ -58,10 +58,10 @@ Each meaningful run should record:
 
 Use chronological validation whenever possible. Compare against simple baselines such as ADP/projection, random, genome, neural, and disabled-transaction arms. Report weekly wins, points for, playoff rate, championship rate, lineup efficiency, transaction value, and uncertainty—not only a single fitness number.
 
-Promotion is gated, not merely reported: paired unseen-season deltas must have
-a positive bootstrap interval and must not regress weekly wins. A model that
-fails the gate remains an experiment artifact and is not promoted to the
-flagship checkpoint.
+Promotion is gated, not merely reported: at least two aligned unseen-season
+deltas must have a positive bootstrap interval and must not regress weekly wins.
+A model that fails the gate remains an experiment artifact and is not promoted
+to the flagship checkpoint.
 
 ## Synthetic seasons
 

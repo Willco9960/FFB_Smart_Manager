@@ -249,47 +249,63 @@ def run_batched_policy_draft(
             constrained = available & shape_allowed
             no_constrained = ~constrained.any(dim=1)
 
-            player_features, state_features = _build_player_features(
-                projected_points=working_scores.masked_fill(~available, 0.0),
-                positions=positions,
-                available=available,
-                rosters=rosters,
-                team_index=team_index,
-                projection_floors=None,
-                projection_medians=None,
-                projection_ceilings=None,
-                boom_probabilities=None,
-            )
-            flat_player = player_features.reshape(-1, player_features.shape[-1])
-            flat_state = state_features.reshape(-1, state_features.shape[-1])
-            selected_policy = (
-                team_policy_networks[team_index]
-                if team_policy_networks is not None
-                else policy_network
-            )
-            with torch.autocast(
-                device_type=projected_points.device.type,
-                dtype=torch.float16,
-                enabled=autocast_enabled,
-            ):
-                policy_scores = selected_policy(
-                    flat_player,
-                    flat_state,
-                    decision_type="draft",
-                ).reshape(scenarios, player_count)
-            projection_anchor = working_scores / working_scores.masked_fill(
-                ~available, float("-inf")
-            ).max(dim=1).values.clamp_min(1.0).unsqueeze(1)
-            scores = policy_scores.to(working_scores.dtype) + anchor_weight * projection_anchor
-            scores = scores.masked_fill(~constrained, float("-inf"))
             opponent_scores = working_scores.masked_fill(~available, float("-inf"))
             use_policy = (
                 torch.ones(scenarios, dtype=torch.bool, device=projected_points.device)
                 if team_policy_networks is not None
                 else policy_team_indices == team_index
             )
-            scores = torch.where(use_policy.unsqueeze(1), scores, opponent_scores)
-            scores = torch.where(no_constrained.unsqueeze(1), opponent_scores, scores)
+            scores = opponent_scores.clone()
+            if use_policy.any():
+                policy_available = available[use_policy]
+                policy_working_scores = working_scores[use_policy]
+                policy_rosters = rosters[use_policy]
+                player_features, state_features = _build_player_features(
+                    projected_points=policy_working_scores.masked_fill(
+                        ~policy_available, 0.0
+                    ),
+                    positions=positions,
+                    available=policy_available,
+                    rosters=policy_rosters,
+                    team_index=team_index,
+                    projection_floors=None,
+                    projection_medians=None,
+                    projection_ceilings=None,
+                    boom_probabilities=None,
+                )
+                flat_player = player_features.reshape(-1, player_features.shape[-1])
+                flat_state = state_features.reshape(-1, state_features.shape[-1])
+                selected_policy = (
+                    team_policy_networks[team_index]
+                    if team_policy_networks is not None
+                    else policy_network
+                )
+                with torch.autocast(
+                    device_type=projected_points.device.type,
+                    dtype=torch.float16,
+                    enabled=autocast_enabled,
+                ):
+                    policy_scores = selected_policy(
+                        flat_player,
+                        flat_state,
+                        decision_type="draft",
+                    ).reshape(use_policy.sum(), player_count)
+                projection_anchor = policy_working_scores / policy_working_scores.masked_fill(
+                    ~policy_available, float("-inf")
+                ).max(dim=1).values.clamp_min(1.0).unsqueeze(1)
+                policy_scores = policy_scores.to(working_scores.dtype) + (
+                    anchor_weight * projection_anchor
+                )
+                policy_scores = policy_scores.masked_fill(
+                    ~constrained[use_policy], float("-inf")
+                )
+                policy_scores = torch.where(
+                    no_constrained[use_policy].unsqueeze(1),
+                    opponent_scores[use_policy],
+                    policy_scores,
+                )
+                scores[use_policy] = policy_scores
+
             selected = scores.argmax(dim=1)
             rosters[:, team_index, round_number] = selected
             counts[:, team_index] += position_one_hot[selected].to(torch.int16)

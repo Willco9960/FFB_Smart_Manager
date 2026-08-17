@@ -81,6 +81,35 @@ def test_create_leakage_safe_player_pool_uses_previous_season_as_projection():
     assert players[0].actual_score == 120.0
 
 
+def test_projection_season_identity_is_used_for_player_metadata():
+    projection_rows = [
+        {
+            "player_id": "stable-id",
+            "player_name": "Preseason Name",
+            "position": "WR",
+            "recent_team": "OLD",
+            "receiving_yards": "100",
+        }
+    ]
+    actual_rows = [
+        {
+            "player_id": "stable-id",
+            "player_name": "Target Name",
+            "position": "WR",
+            "recent_team": "NEW",
+            "receiving_yards": "120",
+        }
+    ]
+
+    players = create_leakage_safe_player_pool(
+        projection_rows=projection_rows,
+        actual_rows=actual_rows,
+    )
+
+    assert players[0].name == "Preseason Name"
+    assert players[0].team == "OLD"
+
+
 def test_create_leakage_safe_player_pool_includes_players_missing_previous_season():
     projection_rows = []
     actual_rows = [
@@ -95,6 +124,7 @@ def test_create_leakage_safe_player_pool_includes_players_missing_previous_seaso
     players = create_leakage_safe_player_pool(
         projection_rows=projection_rows,
         actual_rows=actual_rows,
+        include_actual_only=True,
     )
 
     assert len(players) == 1

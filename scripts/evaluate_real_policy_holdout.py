@@ -6,10 +6,13 @@ from scripts.evaluate_synthetic_policy_real_seasons import (
     evaluate_policy,
     load_transaction_genome,
 )
+from scripts.train_manager_policy_real_seasons import (
+    HOLDOUT_SEASON,
+    TRAINING_END_SEASON,
+)
 
 REAL_POLICY_PATH = Path("data/models/manager_policy_real_seasons.pt")
-HOLDOUT_SEASON = 2025
-PROMOTION_SEASONS = (2024, 2025)
+PROMOTION_SEASONS = (TRAINING_END_SEASON + 1, HOLDOUT_SEASON)
 
 
 def main():
@@ -28,6 +31,8 @@ def main():
         [result.fitness for result in original_results],
         [result.wins for result in trained_results],
         [result.wins for result in original_results],
+        evaluation_seasons=PROMOTION_SEASONS,
+        training_end_season=TRAINING_END_SEASON,
     )
     print("Real-season policy promotion gate")
     for original, trained in zip(original_results, trained_results, strict=True):

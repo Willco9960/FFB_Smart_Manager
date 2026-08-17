@@ -92,6 +92,7 @@ def create_leakage_safe_player_pool(
     actual_rows: list[dict[str, str]],
     scoring_settings: FantasyScoringSettings = STANDARD_SCORING,
     include_special_teams: bool = False,
+    include_actual_only: bool = False,
 ) -> list[Player]:
     projection_totals = build_season_totals(
         rows=projection_rows,
@@ -105,13 +106,18 @@ def create_leakage_safe_player_pool(
     )
     players = []
 
-    # Use the union rather than an inner join.  A player absent from the
-    # projection season is a legitimate draft candidate (rookie, returning
-    # player, or changed identity) and must remain in the pre-season universe.
-    for player_key in projection_totals.keys() | actual_totals.keys():
+    player_keys = (
+        projection_totals.keys() | actual_totals.keys()
+        if include_actual_only
+        else projection_totals.keys()
+    )
+    for player_key in player_keys:
         projection_player = projection_totals.get(player_key)
         actual_player = actual_totals.get(player_key)
-        source_player = actual_player or projection_player
+        # Projection-season metadata is the pre-season identity/team view.
+        # Target-season rows supply outcomes only; using their metadata would
+        # leak post-season roster changes into the draft universe.
+        source_player = projection_player or actual_player
         if source_player is None:
             continue
 
@@ -147,6 +153,7 @@ def load_leakage_safe_player_pool(
     raw_data_dir=RAW_DATA_DIR,
     scoring_settings: FantasyScoringSettings = STANDARD_SCORING,
     include_special_teams: bool = False,
+    include_actual_only: bool = False,
 ) -> list[Player]:
     projection_rows = load_player_stats(
         season=projection_season,
@@ -162,4 +169,5 @@ def load_leakage_safe_player_pool(
         actual_rows=actual_rows,
         scoring_settings=scoring_settings,
         include_special_teams=include_special_teams,
+        include_actual_only=include_actual_only,
     )

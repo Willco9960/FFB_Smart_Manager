@@ -99,6 +99,16 @@ def resolve_device(requested: str) -> torch.device:
     return torch.device(requested)
 
 
+def validate_season_window(start_season: int, end_season: int, holdout_season: int) -> None:
+    """Reject training windows that make the declared holdout invalid."""
+    if end_season < start_season:
+        raise ValueError("end-season must be >= start-season")
+    if holdout_season < 0:
+        raise ValueError("holdout-season must be zero or a positive season.")
+    if holdout_season > 0 and holdout_season <= end_season:
+        raise ValueError("Holdout season must be after every training season.")
+
+
 def load_historical_states(args: argparse.Namespace, device: torch.device):
     seasons = list(range(args.start_season, args.end_season + 1))
 
@@ -128,6 +138,7 @@ def load_holdout_state(args: argparse.Namespace, device: torch.device):
 
 def main() -> None:
     args = parse_args()
+    validate_season_window(args.start_season, args.end_season, args.holdout_season)
     device = resolve_device(args.device)
     torch.set_float32_matmul_precision("high")
     if device.type == "cuda":

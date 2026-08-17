@@ -69,6 +69,7 @@ def create_historical_cuda_inputs(
         actual_season=season,
         raw_data_dir=raw_data_dir,
         include_special_teams=True,
+        include_actual_only=False,
     )[:players]
     if len(player_pool) < 160:
         raise ValueError(

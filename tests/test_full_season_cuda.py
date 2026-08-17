@@ -78,6 +78,65 @@ def test_policy_controlled_full_season_records_all_in_season_heads():
     assert len(state.trade_policy_gains) == 14
 
 
+class DeterministicLineupPolicy(torch.nn.Module):
+    def __init__(self, sign: float):
+        super().__init__()
+        self.sign = sign
+
+    def forward(self, player_features, state_features, decision_type="lineup"):
+        return self.sign * player_features[:, 2]
+
+
+def test_policy_control_is_limited_to_candidate_team_in_season_heads():
+    state_a = create_synthetic_season_state(scenarios=1, players=200)
+    state_b = create_synthetic_season_state(scenarios=1, players=200)
+    state_a.draft()
+    state_b.draft()
+    state_a.weekly_projections[:, 0] = 1.0
+    state_b.weekly_projections[:, 0] = 1.0
+    policy_a = DeterministicLineupPolicy(1.0)
+    policy_b = DeterministicLineupPolicy(-1.0)
+    for state, policy in ((state_a, policy_a), (state_b, policy_b)):
+        state.active_policy_network = policy
+        state.active_policy_team_indices = torch.zeros(
+            state.scenario_count,
+            dtype=torch.long,
+            device=state.device,
+        )
+        state.score_week(0, policy_network=policy)
+
+    assert torch.equal(state_a.weekly_scores[0][:, 1:], state_b.weekly_scores[0][:, 1:])
+
+
+def test_cuda_playoffs_pair_by_standings_seed_not_team_id():
+    state = create_synthetic_season_state(
+        scenarios=1,
+        players=10,
+        team_count=10,
+        roster_size=1,
+        weeks=17,
+    )
+    state.lineup_position_rules = ((0,),)
+    state.positions.zero_()
+    state.rosters = torch.arange(10, dtype=torch.long).reshape(1, 10, 1)
+    state.wins[0] = torch.arange(1, 11, dtype=torch.int32)
+    state.points_for[0] = torch.arange(1, 11, dtype=torch.float32)
+    state.weekly_actual_points.zero_()
+    state.weekly_actual_points[0, 14] = torch.tensor(
+        [0.0, 0.0, 0.0, 0.0, 1.0, 10.0, 1.0, 10.0, 0.0, 0.0]
+    )
+    state.weekly_actual_points[0, 15] = torch.tensor(
+        [0.0, 0.0, 0.0, 0.0, 0.0, 70.0, 0.0, 90.0, 100.0, 80.0]
+    )
+    state.weekly_actual_points[0, 16] = torch.tensor(
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 80.0, 100.0]
+    )
+
+    champions = state.run_playoffs()
+
+    assert champions.item() == 9
+
+
 def test_full_contract_draft_reserves_kicker_and_defense_slots():
     generator = torch.Generator().manual_seed(7)
     positions = torch.tensor(([0, 1, 2, 3, 4, 5] * 40)[:200])

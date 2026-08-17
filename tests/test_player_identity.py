@@ -56,6 +56,7 @@ def test_actual_only_player_remains_in_pool_with_missing_projection_history():
     players = create_leakage_safe_player_pool(
         projection_rows=[],
         actual_rows=actual_rows,
+        include_actual_only=True,
     )
 
     assert len(players) == 1
@@ -63,3 +64,22 @@ def test_actual_only_player_remains_in_pool_with_missing_projection_history():
     assert players[0].projected_score == 0.0
     assert players[0].actual_score == 10.0
     assert players[0].history_missing is True
+
+
+def test_target_only_player_is_excluded_from_default_pool():
+    actual_rows = [
+        {
+            "player_id": "target-only",
+            "player_name": "Target Only WR",
+            "position": "WR",
+            "recent_team": "NEW",
+            "receiving_yards": "100",
+        }
+    ]
+
+    players = create_leakage_safe_player_pool(
+        projection_rows=[],
+        actual_rows=actual_rows,
+    )
+
+    assert players == []

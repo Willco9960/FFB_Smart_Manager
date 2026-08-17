@@ -49,12 +49,19 @@ class CudaSeasonState:
     trade_policy_gains: list[torch.Tensor] = field(default_factory=list)
     active_policy_network: torch.nn.Module | None = field(default=None, repr=False)
     active_team_policy_networks: list[torch.nn.Module] | None = field(default=None, repr=False)
+    active_policy_team_indices: torch.Tensor | None = field(default=None, repr=False)
     draft_floors: torch.Tensor | None = None
     draft_medians: torch.Tensor | None = None
     draft_ceilings: torch.Tensor | None = None
     draft_boom_probabilities: torch.Tensor | None = None
     lineup_position_rules: tuple[tuple[int, ...], ...] = (
-        (0,), (1,), (1,), (2,), (2,), (3,), (1, 2, 3)
+        (0,),
+        (1,),
+        (1,),
+        (2,),
+        (2,),
+        (3,),
+        (1, 2, 3),
     )
     contract_digest: str = ESPN_FITNESS_CONTRACT.digest()
 
@@ -228,32 +235,71 @@ class CudaSeasonState:
         policy_network = policy_override or policy_network
         if policy_network is None:
             return points
-        available = self.available if self.available is not None else torch.ones(
-            (self.scenario_count, self.player_count), dtype=torch.bool, device=self.device
+        available = (
+            self.available
+            if self.available is not None
+            else torch.ones(
+                (self.scenario_count, self.player_count), dtype=torch.bool, device=self.device
+            )
         )
         rosters = self._require_rosters()
+        candidate_mask = None
+        if self.active_team_policy_networks is None and self.active_policy_team_indices is not None:
+            candidate_mask = self.active_policy_team_indices == team_index
+            if not candidate_mask.any():
+                return points
+            points_for_policy = points[candidate_mask]
+            available_for_policy = available[candidate_mask]
+            rosters_for_policy = rosters[candidate_mask]
+        else:
+            points_for_policy = points
+            available_for_policy = available
+            rosters_for_policy = rosters
         player_features, state_features = _build_player_features(
-            projected_points=points.masked_fill(~available, 0.0),
+            projected_points=points_for_policy.masked_fill(~available_for_policy, 0.0),
             positions=self.positions,
-            available=available,
-            rosters=rosters,
+            available=available_for_policy,
+            rosters=rosters_for_policy,
             team_index=team_index,
-            projection_floors=self.draft_floors,
-            projection_medians=self.draft_medians,
-            projection_ceilings=self.draft_ceilings,
-            boom_probabilities=self.draft_boom_probabilities,
+            projection_floors=(
+                None if self.draft_floors is None else self.draft_floors[candidate_mask]
+            )
+            if candidate_mask is not None
+            else self.draft_floors,
+            projection_medians=(
+                None if self.draft_medians is None else self.draft_medians[candidate_mask]
+            )
+            if candidate_mask is not None
+            else self.draft_medians,
+            projection_ceilings=(
+                None if self.draft_ceilings is None else self.draft_ceilings[candidate_mask]
+            )
+            if candidate_mask is not None
+            else self.draft_ceilings,
+            boom_probabilities=(
+                None
+                if self.draft_boom_probabilities is None
+                else self.draft_boom_probabilities[candidate_mask]
+            )
+            if candidate_mask is not None
+            else self.draft_boom_probabilities,
         )
         with torch.inference_mode():
             scores = policy_network(
                 player_features.reshape(-1, player_features.shape[-1]),
                 state_features.reshape(-1, state_features.shape[-1]),
                 decision_type=decision_type,
-            ).reshape(self.scenario_count, self.player_count)
+            ).reshape(points_for_policy.shape[0], self.player_count)
         scores = scores.to(points.dtype)
         scores = (scores - scores.mean(dim=1, keepdim=True)) / scores.std(
             dim=1, keepdim=True
         ).clamp_min(1e-4)
-        return points + (0.25 * scores)
+        adjusted = points_for_policy + (0.25 * scores)
+        if candidate_mask is None:
+            return adjusted
+        result = points.clone()
+        result[candidate_mask] = adjusted
+        return result
 
     def score_week(
         self,
@@ -313,7 +359,17 @@ class CudaSeasonState:
                 ],
                 dim=1,
             )
-            self.lineup_policy_gains.append(scores - baseline)
+            lineup_gain = scores - baseline
+            if (
+                self.active_team_policy_networks is None
+                and self.active_policy_team_indices is not None
+            ):
+                team_ids = torch.arange(self.team_count, device=self.device).unsqueeze(0)
+                candidate_mask = team_ids == self.active_policy_team_indices.unsqueeze(1)
+                lineup_gain = torch.where(
+                    candidate_mask, lineup_gain, torch.zeros_like(lineup_gain)
+                )
+            self.lineup_policy_gains.append(lineup_gain)
         return scores
 
     def apply_waivers(
@@ -404,9 +460,12 @@ class CudaSeasonState:
             candidate_scores - current_scores >= minimum_improvement
         )
         accepted_count = accepted.sum(dim=1).to(torch.int32)
-        counterfactual_gain = (
-            (candidate_scores - current_scores).clamp_min(0.0) * accepted
-        ).sum(dim=1)
+        waiver_gain = (candidate_scores - current_scores).clamp_min(0.0) * accepted
+        if self.active_team_policy_networks is None and self.active_policy_team_indices is not None:
+            team_ids = torch.arange(self.team_count, device=self.device).unsqueeze(0)
+            candidate_mask = team_ids == self.active_policy_team_indices.unsqueeze(1)
+            waiver_gain = torch.where(candidate_mask, waiver_gain, torch.zeros_like(waiver_gain))
+        counterfactual_gain = waiver_gain.sum(dim=1)
 
         for rank in range(self.team_count):
             update_mask = accepted[:, rank]
@@ -524,9 +583,7 @@ class CudaSeasonState:
         flat_a[flat_rows, a_slots.reshape(-1)] = b_players.reshape(-1)
         flat_b[flat_rows, b_slots.reshape(-1)] = a_players.reshape(-1)
         repeated_projection = (
-            pair_projection.unsqueeze(2)
-            .expand(-1, -1, combos, -1)
-            .reshape(-1, self.player_count)
+            pair_projection.unsqueeze(2).expand(-1, -1, combos, -1).reshape(-1, self.player_count)
         )
         repeated_projection_b = (
             policy_projection_by_team[:, pair_b]
@@ -584,7 +641,16 @@ class CudaSeasonState:
         accepted_count = accepted.to(torch.int32)
         self.trade_counts.append(accepted_count)
         if policy_network is not None:
-            self.trade_policy_gains.append(best_gain.clamp_min(0.0))
+            trade_gain = best_gain.clamp_min(0.0)
+            if (
+                self.active_team_policy_networks is None
+                and self.active_policy_team_indices is not None
+            ):
+                candidate_trade = (best_a == self.active_policy_team_indices) | (
+                    best_b == self.active_policy_team_indices
+                )
+                trade_gain = torch.where(candidate_trade, trade_gain, torch.zeros_like(trade_gain))
+            self.trade_policy_gains.append(trade_gain)
         return accepted_count
 
     def run_playoffs(self) -> torch.Tensor:
@@ -623,8 +689,11 @@ class CudaSeasonState:
         week_16 = self._score_without_standings(15)
         seed_one = seeds[:, 0]
         seed_two = seeds[:, 1]
-        lowest_remaining = torch.maximum(first_winner, second_winner)
-        other_remaining = torch.minimum(first_winner, second_winner)
+        first_seed_rank = (seeds == first_winner.unsqueeze(1)).to(torch.int64).argmax(dim=1)
+        second_seed_rank = (seeds == second_winner.unsqueeze(1)).to(torch.int64).argmax(dim=1)
+        lower_seed_is_first = first_seed_rank > second_seed_rank
+        lowest_remaining = torch.where(lower_seed_is_first, first_winner, second_winner)
+        other_remaining = torch.where(lower_seed_is_first, second_winner, first_winner)
         semi_one = torch.where(
             week_16.gather(1, seed_one.unsqueeze(1)).squeeze(1)
             >= week_16.gather(1, lowest_remaining.unsqueeze(1)).squeeze(1),
@@ -797,9 +866,7 @@ def run_full_cuda_season(
     if fitness_contract is not None:
         expected_contract_digest = fitness_contract.digest()
         if state.contract_digest not in ("", expected_contract_digest):
-            raise ValueError(
-                "CUDA state fitness contract does not match the requested contract."
-            )
+            raise ValueError("CUDA state fitness contract does not match the requested contract.")
         state.contract_digest = expected_contract_digest
         position_ids = {
             "QB": 0,
@@ -819,13 +886,30 @@ def run_full_cuda_season(
     if team_policy_networks is not None:
         state.active_team_policy_networks = team_policy_networks
         state.active_policy_network = team_policy_networks[0]
+        state.active_policy_team_indices = None
+    elif policy_network is not None:
+        state.active_team_policy_networks = None
+        if policy_team_indices is None:
+            policy_team_indices = torch.zeros(
+                state.scenario_count,
+                dtype=torch.long,
+                device=state.device,
+            )
+        policy_team_indices = policy_team_indices.to(state.device)
+        state.active_policy_team_indices = policy_team_indices
+        state.active_policy_network = policy_network
+    else:
+        state.active_team_policy_networks = None
+        state.active_policy_team_indices = None
+        state.active_policy_network = None
     state.draft(
         policy_network=policy_network
         or (team_policy_networks[0] if team_policy_networks else None),
         policy_team_indices=policy_team_indices,
         draft_anchor_weight=draft_anchor_weight,
     )
-    state.active_policy_network = policy_network
+    if team_policy_networks is None:
+        state.active_policy_network = policy_network
     regular_season_weeks = min(14, state.week_count - 3)
     for week in range(regular_season_weeks):
         if enable_transactions:

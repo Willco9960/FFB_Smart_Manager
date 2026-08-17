@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Changed
+- Hardened CUDA manager training: batched population evaluation now preserves
+  the active fitness contract, lineup rules, and distributional projection
+  context; custom contracts are propagated safely; candidate-only routing
+  prevents opponent control; redundant opponent draft and in-season policy
+  inference is skipped; playoff pairing uses standings seed ranks; training
+  rejects invalid chronological holdout windows; and resumable CUDA checkpoints
+  are replaced atomically.
+- Promotion gates now require at least two aligned unseen seasons and validate
+  season provenance, matching the documented chronological holdout policy.
+- Historical player pools now exclude target-season-only players by default and
+  retain projection-season identity/team metadata.
 - Added an isolated tensorized draft and lineup CUDA benchmark with CPU parity tests; the production simulator remains unchanged.
 - Added a reproducible CPU-versus-CUDA comparison report for the tensorized prototype.
 - Added resident tensor scenario batches, in-place draft scoring, and opt-in CUDA stage profiling for GPH optimization.

@@ -1,8 +1,10 @@
 import random
+from dataclasses import replace
 
 import pytest
 import torch
 
+from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT
 from gpu_sim.full_season import create_synthetic_season_state, run_full_cuda_season
 from gpu_sim.policy_training import (
     evaluate_cuda_policy,
@@ -165,6 +167,34 @@ def test_cuda_policy_training_checkpoint_resumes_population(tmp_path):
     assert resumed_metrics[1].generation == 2
 
 
+def test_cuda_training_checkpoint_preserves_previous_file_on_save_failure(
+    tmp_path,
+    monkeypatch,
+):
+    checkpoint_path = tmp_path / "training_state.pt"
+    checkpoint_path.write_bytes(b"previous checkpoint")
+    policy = ModularManagerPolicyNetwork()
+    real_torch_save = torch.save
+
+    def save_then_fail(payload, target):
+        real_torch_save(payload, target)
+        raise RuntimeError("simulated checkpoint interruption")
+
+    monkeypatch.setattr(torch, "save", save_then_fail)
+    with pytest.raises(RuntimeError, match="simulated checkpoint interruption"):
+        save_cuda_training_state(
+            checkpoint_path,
+            generation=1,
+            population=[policy],
+            best_policy=policy,
+            metrics=[],
+            rng_state=random.Random(1).getstate(),
+        )
+
+    assert checkpoint_path.read_bytes() == b"previous checkpoint"
+    assert not checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp").exists()
+
+
 def test_batched_population_evaluation_matches_sequential_evaluation():
     state = create_synthetic_season_state(
         scenarios=2,
@@ -236,3 +266,88 @@ def test_batched_population_transaction_heads_match_exact_evaluation():
         assert actual.points_for == expected.points_for
         assert actual.playoff_rate == expected.playoff_rate
         assert actual.championship_rate == expected.championship_rate
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+def test_batched_population_moves_cpu_policies_to_cuda_state_device():
+    state = create_synthetic_season_state(
+        scenarios=1,
+        players=160,
+        weeks=17,
+        device=torch.device("cuda"),
+    )
+    policies = [ModularManagerPolicyNetwork() for _ in range(2)]
+    scenario_bank = prepare_cuda_scenario_bank(
+        [state],
+        scenario_repeats=1,
+        projection_noise=0.0,
+        seed=23,
+    )
+
+    evaluations = evaluate_cuda_policy_population(
+        policies,
+        [state],
+        scenario_bank=scenario_bank,
+        enable_transactions=False,
+        exact_policy_head_parity=False,
+    )
+
+    assert len(evaluations) == len(policies)
+
+
+def test_batched_population_preserves_contract_and_distributional_context():
+    state = create_synthetic_season_state(
+        scenarios=1,
+        players=160,
+        weeks=17,
+        device=torch.device("cpu"),
+    )
+    state.draft_floors = state.draft_projections * 0.8
+    state.draft_medians = state.draft_projections
+    state.draft_ceilings = state.draft_projections * 1.2
+    state.draft_boom_probabilities = torch.full_like(state.draft_projections, 0.25)
+    state.positions = torch.tensor(
+        ([0, 1, 1, 2, 2, 3, 4, 5] * 20)[:160],
+        dtype=torch.long,
+    )
+    state.lineup_position_rules = (
+        (0,),
+        (1,),
+        (1,),
+        (2,),
+        (2,),
+        (3,),
+        (1, 2, 3),
+        (4,),
+        (5,),
+    )
+    contract = replace(ESPN_FITNESS_CONTRACT, contract_version="test-contract-v2")
+    policies = [ModularManagerPolicyNetwork() for _ in range(2)]
+    scenario_bank = prepare_cuda_scenario_bank(
+        [state],
+        scenario_repeats=1,
+        projection_noise=0.0,
+        seed=13,
+    )
+
+    exact = evaluate_cuda_policy_population(
+        policies,
+        [state],
+        scenario_bank=scenario_bank,
+        enable_transactions=False,
+        fitness_contract=contract,
+        exact_policy_head_parity=True,
+    )
+    batched = evaluate_cuda_policy_population(
+        policies,
+        [state],
+        scenario_bank=scenario_bank,
+        enable_transactions=False,
+        fitness_contract=contract,
+        exact_policy_head_parity=False,
+    )
+
+    for expected, actual in zip(exact, batched, strict=True):
+        assert actual.fitness == expected.fitness
+        assert actual.wins == expected.wins
+        assert actual.points_for == expected.points_for

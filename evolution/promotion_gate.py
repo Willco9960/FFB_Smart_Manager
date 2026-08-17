@@ -48,11 +48,24 @@ def evaluate_promotion_gate(
     *,
     seed: int = 1,
     minimum_mean_delta: float = 0.0,
+    evaluation_seasons: tuple[int, ...] | list[int] | None = None,
+    training_end_season: int | None = None,
 ) -> PromotionDecision:
     if not candidate_fitness or len(candidate_fitness) != len(baseline_fitness):
         raise ValueError("Candidate and baseline fitness must be aligned and non-empty.")
+    if len(candidate_fitness) < 2:
+        raise ValueError("Promotion gate requires at least two unseen seasons.")
     if len(candidate_wins) != len(baseline_wins) or len(candidate_wins) != len(candidate_fitness):
         raise ValueError("Win results must align with fitness results.")
+    if evaluation_seasons is not None:
+        if len(evaluation_seasons) != len(candidate_fitness):
+            raise ValueError("Evaluation seasons must align with fitness results.")
+        if len(set(evaluation_seasons)) != len(evaluation_seasons):
+            raise ValueError("Evaluation seasons must be unique.")
+        if training_end_season is not None and any(
+            season <= training_end_season for season in evaluation_seasons
+        ):
+            raise ValueError("Promotion evaluation seasons must be after training.")
     deltas = [
         candidate - baseline
         for candidate, baseline in zip(candidate_fitness, baseline_fitness, strict=True)

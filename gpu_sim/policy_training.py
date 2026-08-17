@@ -118,8 +118,15 @@ def clone_cuda_state(
     )
 
 
-def fork_cuda_state(state: CudaSeasonState) -> CudaSeasonState:
+def fork_cuda_state(
+    state: CudaSeasonState,
+    *,
+    contract_digest: str | None = None,
+) -> CudaSeasonState:
     """Create a mutable simulation copy without regenerating scenarios."""
+    requested_digest = state.contract_digest if contract_digest is None else contract_digest
+    if state.contract_digest not in (ESPN_FITNESS_CONTRACT.digest(), requested_digest):
+        raise ValueError("CUDA state fitness contract does not match the requested contract.")
 
     return CudaSeasonState(
         draft_projections=state.draft_projections.clone(),
@@ -128,7 +135,8 @@ def fork_cuda_state(state: CudaSeasonState) -> CudaSeasonState:
         positions=state.positions,
         team_count=state.team_count,
         roster_size=state.roster_size,
-        contract_digest=state.contract_digest,
+        lineup_position_rules=state.lineup_position_rules,
+        contract_digest=requested_digest,
         draft_floors=None if state.draft_floors is None else state.draft_floors.clone(),
         draft_medians=None if state.draft_medians is None else state.draft_medians.clone(),
         draft_ceilings=None if state.draft_ceilings is None else state.draft_ceilings.clone(),
@@ -236,6 +244,16 @@ class CudaPolicyEnsemble(torch.nn.Module):
             for name in dict(policies[0].named_buffers())
         }
 
+    def _apply(self, fn, recurse=True):
+        super()._apply(fn, recurse=recurse)
+        self.stacked_parameters = {
+            name: fn(value) for name, value in self.stacked_parameters.items()
+        }
+        self.stacked_buffers = {
+            name: fn(value) for name, value in self.stacked_buffers.items()
+        }
+        return self
+
     def forward(
         self,
         player_features: torch.Tensor,
@@ -318,7 +336,7 @@ def evaluate_cuda_policy(
     lineup_efficiency_values = []
     templates = historical_states if scenario_bank is None else scenario_bank
     for template in templates:
-        state = fork_cuda_state(template)
+        state = fork_cuda_state(template, contract_digest=fitness_contract.digest())
         candidate_team_indices = torch.zeros(state.scenario_count, dtype=torch.long, device=device)
         team_policy_networks = None
         if opponent_policies:
@@ -433,6 +451,17 @@ def evaluate_cuda_policy_population(
 
     for template in scenario_bank:
         scenarios = template.scenario_count
+
+        def repeat_optional(values: torch.Tensor | None) -> torch.Tensor | None:
+            return None if values is None else values.repeat(population_size, 1)
+
+        expected_contract_digest = fitness_contract.digest()
+        if template.contract_digest not in (
+            ESPN_FITNESS_CONTRACT.digest(),
+            expected_contract_digest,
+        ):
+            raise ValueError("CUDA scenario contract does not match the requested contract.")
+
         state = CudaSeasonState(
             draft_projections=template.draft_projections.repeat(population_size, 1),
             weekly_projections=template.weekly_projections.repeat(population_size, 1, 1),
@@ -440,6 +469,12 @@ def evaluate_cuda_policy_population(
             positions=template.positions,
             team_count=template.team_count,
             roster_size=template.roster_size,
+            lineup_position_rules=template.lineup_position_rules,
+            contract_digest=expected_contract_digest,
+            draft_floors=repeat_optional(template.draft_floors),
+            draft_medians=repeat_optional(template.draft_medians),
+            draft_ceilings=repeat_optional(template.draft_ceilings),
+            draft_boom_probabilities=repeat_optional(template.draft_boom_probabilities),
         )
         candidate_team_indices = (
             torch.arange(scenarios, device=device) % state.team_count
@@ -512,6 +547,16 @@ def _cpu_state_dict(policy: ModularManagerPolicyNetwork) -> dict[str, torch.Tens
     }
 
 
+def _atomic_torch_save(payload: object, output_path: Path) -> None:
+    """Write a checkpoint without replacing a valid file with a partial one."""
+    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    try:
+        torch.save(payload, temporary_path)
+        temporary_path.replace(output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def save_cuda_training_state(
     output_path: Path,
     *,
@@ -524,7 +569,7 @@ def save_cuda_training_state(
     """Save enough state to resume the same evolutionary population."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
+    _atomic_torch_save(
         {
             "generation": generation,
             "population": [_cpu_state_dict(policy) for policy in population],
@@ -815,7 +860,7 @@ def save_cuda_policy_checkpoint(
     metrics: list[CudaGenerationMetrics],
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
+    _atomic_torch_save(
         {
             "player_feature_count": policy.player_feature_count,
             "state_feature_count": policy.state_feature_count,

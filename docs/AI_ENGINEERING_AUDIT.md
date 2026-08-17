@@ -1,7 +1,7 @@
 # AI Engineering Audit
 
 **Review date:** 2026-08-16  
-**Reviewed revision:** `3824253`
+**Reviewed revision:** `8f95382` plus the current working-tree review fixes
 **Scope:** projections, manager policies, CPU simulator, CUDA simulator,
 evolution, historical data, evaluation, and reproducibility.
 
@@ -43,11 +43,12 @@ safe:
 | Finding | Status | Evidence |
 | --- | --- | --- |
 | P0-1 policy-controlled manager heads | **Implemented** | CUDA lineup, waiver, trade, and playoff action scoring; legal masks; counterfactual transaction gains; policy-head smoke test |
-| P0-2 opponent population | **Implemented** | Explicit opponent policy lists, self-play mode, frozen `OpponentArchive`, and exact sequential fallback when flattened batching could mix team state |
-| P0-3 survivorship bias | **Implemented** | Stable `player_id`, union player universe, `history_missing`, rookie/target-only tests, weekly ID joins |
+| P0-2 opponent population | **Implemented** | Explicit opponent policy lists, candidate-only in-season routing for projection-baseline opponents, frozen `OpponentArchive`, and exact sequential fallback when flattened batching could mix team state |
+| P0-3 survivorship bias | **Implemented** | Stable `player_id`, projection-season draft universe by default, target-only exclusion, `history_missing`, and weekly ID joins |
+| P0-3b playoff bracket indexing | **Implemented** | Semifinal pairing maps wildcard winners back to standings seed ranks rather than comparing team IDs |
 | P0-4 weak projections | **Implemented** | Optional quantile/boom network, rank/top-k/coverage/calibration/lineup-regret metrics, weekly missing-history feature |
 | P0-5 CPU/CUDA objective drift | **Implemented** | Versioned `FitnessContract`, full lineup/K/DST/DEF position mapping, CPU/tensor golden lineup parity, contract-driven CUDA rules |
-| holdout promotion | **Implemented** | Paired bootstrap promotion gate requiring positive unseen-season interval and no win regression |
+| holdout promotion | **Implemented** | Paired bootstrap promotion gate requiring positive unseen-season interval, no win regression, at least two seasons, and explicit evaluation-season provenance |
 | feature lineage | **Implemented** | `FeatureManifest` with schema, cutoff, normalization, checksums, identity-map version, and checkpoint digest validation |
 | mutation efficiency | **Implemented** | Adapter-focused mutation/crossover with controlled immigrant fraction; shared encoders are preserved |
 | multi-objective reward reporting | **Implemented** | CUDA fitness includes transaction and lineup-efficiency components; generation metrics persist both components alongside wins, points, playoff rate, and championship rate |
@@ -59,6 +60,7 @@ safe:
 | strict data availability gate | **Implemented** | `DataAvailabilityManifest` validates core schema, row coverage, source path, optional-context gaps, and chronological training seasons before projection or manager training |
 | uncertainty-aware manager state | **Implemented** | floor/median/ceiling/boom outputs are normalized into the shared policy state and persisted in feature manifests |
 | manager-head pretraining and preflight | **Implemented** | behavior-cloning warm start covers draft, lineup, waiver, and trade heads; `run_training_preflight` requires all heads, data, contract, and finite-loss checks before long runs |
+| batched device and contract metadata | **Implemented** | Flattened population states preserve lineup rules and contract context; stacked ensemble tensors follow `.to(device)` |
 
 The CUDA population evaluator keeps exact per-policy head evaluation as its
 audit default. The flattened population route is available through
@@ -82,7 +84,7 @@ The remediation pass was verified on 2026-08-16 with:
 
 ```text
 python -m ruff check .       -> All checks passed
-python -m pytest -q          -> 308 passed
+python -m pytest -q          -> 322 passed
 compare_cpu_cuda_historical_season --season 2021 --players 256 --device cpu
                               -> full ESPN lineup/K/DST path completed;
                                  standings/champion/weekly scores exact,
@@ -109,7 +111,7 @@ The current pre-training gate was additionally verified with:
 python -m scripts.run_training_preflight --start-season 2021 --end-season 2024 --device cpu
                               -> approved=True; 5 chronological data seasons checked;
                                  finite all-head pretraining loss 0.160442
-python -m pytest -q          -> 308 passed
+python -m pytest -q          -> 322 passed
 ```
 
 ## What is done well
@@ -231,12 +233,14 @@ explicit policy identity to every team.
 
 ### P0-3: The player pool has survivorship bias
 
-`fantasy_engine/leakage_safe_player_pool.py` intersects projection-season and
-actual-season player keys. `gpu_sim/historical_adapter.py` then truncates that
-intersection to the top projected players.
+`fantasy_engine/leakage_safe_player_pool.py` uses stable projection-season
+player keys for the default draft universe. Target-season rows provide outcome
+values only; target-only rows are excluded unless a caller explicitly opts into
+`include_actual_only=True` for a controlled fixture or pre-season registry.
 
-This excludes rookies, returning players, team changes, and identity changes:
-exactly the cases a real draft manager must handle.
+This deliberately excludes target-only rows. Projection-season-absent rookies,
+returning players, and free agents require a separate pre-season registry if they
+are to enter the universe without using target outcomes.
 
 Required fix:
 
@@ -246,9 +250,11 @@ Required fix:
 - Add rookie, free-agent, team-change, and injury-status features.
 - Test that prior-season-absent players can enter the draft pool.
 
-**Resolution:** Stable IDs, union pools, missing-history masks, and rookie/
-target-only tests are implemented. Injury and market features are optional
-zero-safe columns when historical files do not contain those feeds.
+**Resolution:** Stable IDs, projection-season metadata, target-only exclusion,
+and missing-history masks are implemented. A separate pre-season registry is
+still needed to add projection-season-absent players safely. Injury and market
+features are optional zero-safe columns when historical files do not contain
+those feeds.
 
 ### P0-4: Projection targets are too weak
 
