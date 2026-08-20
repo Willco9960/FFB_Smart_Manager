@@ -301,6 +301,23 @@ def test_throughput_summary_reports_stable_gph_and_normalized_scenarios():
     )
 
 
+def test_throughput_summary_can_exclude_startup_warmup_rates():
+    metrics = [
+        type("Metric", (), {"generation": 1, "elapsed_seconds": 100.0})(),
+        type("Metric", (), {"generation": 2, "elapsed_seconds": 160.0})(),
+        type("Metric", (), {"generation": 3, "elapsed_seconds": 220.0})(),
+    ]
+    report = summarize_cuda_throughput(
+        metrics,
+        population=4,
+        training_seasons=5,
+        scenario_repeats=2,
+        warmup_generations=1,
+    )
+    assert report["warmup_generations_excluded"] == 1
+    assert report["stable_generations_per_hour"] == pytest.approx(60.0)
+
+
 def test_cuda_evaluation_uncertainty_includes_repeated_scenarios(monkeypatch):
     state = create_synthetic_season_state(
         scenarios=1,

@@ -263,24 +263,25 @@ def _sha256_file(path: Path) -> str:
 
 def _git_identity() -> dict[str, object]:
     """Record revision and dirty state without making Git a hard dependency."""
+    repository = Path(__file__).resolve().parents[1]
     try:
         revision = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             check=True,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "-C", str(repository), "status", "--porcelain"],
             capture_output=True,
             text=True,
             check=True,
         ).stdout.strip()
         dirty_output = subprocess.run(
-            ["git", "diff", "HEAD"],
+            ["git", "-C", str(repository), "diff", "HEAD", "--binary"],
             capture_output=True,
             check=True,
-        ).stdout
+        ).stdout + dirty.encode("utf-8")
         return {
             "revision": revision,
             "dirty": bool(dirty),
@@ -863,6 +864,17 @@ def main() -> None:
     report["completed_at"] = datetime.now().astimezone().isoformat()
     report["generations"] = [metric.to_dict() for metric in metrics_history]
     report["output"] = str(args.output)
+    best_metric = max(metrics_history, key=lambda metric: metric.best_risk_adjusted_fitness)
+    final_metric = metrics_history[-1]
+    report["optimization_summary"] = {
+        "best_risk_adjusted_generation": best_metric.generation,
+        "best_risk_adjusted_fitness": best_metric.best_risk_adjusted_fitness,
+        "final_generation": final_metric.generation,
+        "final_risk_adjusted_fitness": final_metric.best_risk_adjusted_fitness,
+        "final_minus_best_risk_adjusted_fitness": (
+            final_metric.best_risk_adjusted_fitness - best_metric.best_risk_adjusted_fitness
+        ),
+    }
     if holdout_states:
         from gpu_sim.policy_training import evaluate_cuda_policy
 
@@ -951,6 +963,7 @@ def main() -> None:
             population=args.population,
             training_seasons=training_seasons_count,
             scenario_repeats=args.scenario_repeats,
+            warmup_generations=min(5, len(metrics_history) - 1),
         )
     args.report.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(f"CUDA manager policy saved to: {args.output}", flush=True)

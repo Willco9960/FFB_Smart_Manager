@@ -109,6 +109,7 @@ def summarize_cuda_throughput(
     population: int,
     training_seasons: int,
     scenario_repeats: int,
+    warmup_generations: int = 0,
 ) -> dict[str, object]:
     """Summarize measured generation and scenario throughput.
 
@@ -120,6 +121,8 @@ def summarize_cuda_throughput(
         raise ValueError("At least one generation metric is required.")
     if population < 1 or training_seasons < 1 or scenario_repeats < 1:
         raise ValueError("Throughput dimensions must be positive.")
+    if warmup_generations < 0 or warmup_generations >= len(metrics):
+        raise ValueError("warmup_generations must be non-negative and smaller than metric count.")
     rates = []
     previous = 0.0
     for metric in metrics:
@@ -132,13 +135,17 @@ def summarize_cuda_throughput(
         previous = elapsed
     if not rates:
         rates = [3600.0 / previous]
-    stable_gph = sum(rates) / len(rates)
+    stable_rates = rates[warmup_generations:]
+    if not stable_rates:
+        stable_rates = rates
+    stable_gph = sum(stable_rates) / len(stable_rates)
     scenario_per_generation = population * training_seasons * scenario_repeats
     return {
         "elapsed_seconds": previous,
         "generations_per_hour": len(metrics) / (previous / 3600.0),
         "stable_generations_per_hour": stable_gph,
-        "stable_generations_per_hour_range": [min(rates), max(rates)],
+        "stable_generations_per_hour_range": [min(stable_rates), max(stable_rates)],
+        "warmup_generations_excluded": warmup_generations,
         "population_evaluations": len(metrics) * population * training_seasons,
         "scenario_evaluations": len(metrics) * scenario_per_generation,
         "normalized_scenario_evaluations_per_hour": stable_gph * scenario_per_generation,
