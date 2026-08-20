@@ -1,6 +1,6 @@
 """Shared historical-season configuration and validation helpers."""
 
-EARLIEST_RELIABLE_SEASON = 2001
+EARLIEST_RELIABLE_SEASON = 2000
 LATEST_COMPLETED_SEASON = 2025
 
 

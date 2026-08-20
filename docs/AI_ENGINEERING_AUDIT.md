@@ -47,10 +47,11 @@ safe:
 | P0-3 survivorship bias | **Implemented** | Stable `player_id`, projection-season draft universe by default, target-only exclusion, `history_missing`, and weekly ID joins |
 | P0-3b playoff bracket indexing | **Implemented** | Semifinal pairing maps wildcard winners back to standings seed ranks rather than comparing team IDs |
 | P0-4 weak projections | **Implemented** | Optional quantile/boom network, rank/top-k/coverage/calibration/lineup-regret metrics, weekly missing-history feature |
-| P0-5 CPU/CUDA objective drift | **Implemented** | Versioned `FitnessContract`, full lineup/K/DST/DEF position mapping, CPU/tensor golden lineup parity, contract-driven CUDA rules |
+| P0-5 CPU/CUDA objective drift | **Implemented with explicit scope** | Versioned contract and parity rules are enforced, but CUDA replacement-value and invalid-action terms remain outside the current tensor fitness; CUDA promotion is blocked pending full behavioral parity |
 | holdout promotion | **Implemented** | Paired bootstrap promotion gate requiring positive unseen-season interval, no win regression, at least two seasons, and explicit evaluation-season provenance |
 | feature lineage | **Implemented** | `FeatureManifest` with schema, cutoff, normalization, checksums, identity-map version, and checkpoint digest validation |
-| mutation efficiency | **Implemented** | Adapter-focused mutation/crossover with controlled immigrant fraction; shared encoders are preserved |
+| mutation efficiency | **Implemented** | Adapter-focused mutation remains the compatibility default; frontier runs can evolve shared encoders with explicit `--full-policy-mutation` |
+| run provenance and recovery identity | **Implemented** | New CUDA artifacts store raw-file SHA-256 manifests, architecture/search settings, and reject mismatched resumes |
 | multi-objective reward reporting | **Implemented** | CUDA fitness includes transaction and lineup-efficiency components; generation metrics persist both components alongside wins, points, playoff rate, and championship rate |
 | stable transaction attribution | **Implemented** | Waiver/trade impacts prefer stable player IDs and retain legacy name fallbacks |
 | full-rule parity harness | **Implemented** | Historical comparison uses the same drafted rosters for CPU/CUDA scoring and reports weekly-score deltas, standings/champion parity, and transaction-count deltas |
@@ -78,13 +79,31 @@ That command keeps the legacy point model for compatibility and additionally
 writes `data/models/draft_projection_distributional.pt` with floor, median,
 ceiling, and boom probability outputs.
 
+The follow-up hardening pass additionally added multi-season holdouts,
+legal projection baselines, explicit self-play archive sizing and restoration,
+and a parity-report gate. A CPU smoke through 2023 with 2024/2025 holdouts
+completed successfully, and a self-play smoke completed with archive size 8.
+These are engineering acceptance runs only; neither is promotion evidence.
+
+Measured parity evidence from the current historical harness:
+
+- 2023, 256 players, transactions disabled: exact standings/champion/weekly
+  scores, maximum weekly delta 0.0.
+- 2023, 256 players, transactions enabled: standings and weekly scores diverge,
+  maximum weekly delta 66.86 in the latest post-contract comparison; this remains
+  a promotion blocker.
+
+The CUDA trainer therefore records parity evidence in every manifest/report and
+supports `--require-promotion-ready`, which refuses to start unless the supplied
+parity artifact matches the transaction mode and proves exact full-rule parity.
+
 ## Verification evidence
 
 The remediation pass was verified on 2026-08-16 with:
 
 ```text
 python -m ruff check .       -> All checks passed
-python -m pytest -q          -> 322 passed
+python -m pytest -q          -> 326 passed
 compare_cpu_cuda_historical_season --season 2021 --players 256 --device cpu
                               -> full ESPN lineup/K/DST path completed;
                                  standings/champion/weekly scores exact,
@@ -111,7 +130,7 @@ The current pre-training gate was additionally verified with:
 python -m scripts.run_training_preflight --start-season 2021 --end-season 2024 --device cpu
                               -> approved=True; 5 chronological data seasons checked;
                                  finite all-head pretraining loss 0.160442
-python -m pytest -q          -> 322 passed
+python -m pytest -q          -> 326 passed
 ```
 
 ## What is done well
@@ -154,7 +173,10 @@ The current CUDA trainer includes:
 - deterministic Python/PyTorch RNG checkpoints;
 - full population resume checkpoints;
 - a sequential debugging fallback;
-- CUDA-focused parity tests.
+- CUDA-focused parity tests;
+- scenario-level uncertainty aggregation;
+- deterministic periodic scenario-bank refresh;
+- SHA-256 data/search manifests attached to new policy and resume artifacts.
 
 The CUDA and CPU paths share `ManagerState`, `LegalActionMask`,
 `ManagerAction`, and `ManagerTransition` digests. Distributional projection

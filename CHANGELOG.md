@@ -16,7 +16,30 @@
   retain projection-season identity/team metadata.
 - Added an isolated tensorized draft and lineup CUDA benchmark with CPU parity tests; the production simulator remains unchanged.
 - Added a reproducible CPU-versus-CUDA comparison report for the tensorized prototype.
-- Added resident tensor scenario batches, in-place draft scoring, and opt-in CUDA stage profiling for GPH optimization.
+- Added auditable CUDA run manifests with SHA-256 identities for every raw
+  season file, architecture/search settings, and strict resume mismatch checks.
+- CUDA policy uncertainty now aggregates individual scenario outcomes instead of
+  collapsing each season to one mean before computing variance.
+- Added deterministic periodic scenario-bank refresh to reduce overfitting to a
+  fixed projection-noise realization while preserving common random numbers
+  within each generation.
+- Added opt-in full-policy mutation so frontier runs can evolve shared encoders,
+  plus from-scratch configurable hidden widths and parameter-count provenance.
+- Hardened modular policy hidden-width validation.
+- Added mandatory CPU historical preflight before CUDA state loading, propagated
+  `--compile-policy` through the batched population evaluator with safe fallback,
+  and made periodic scenario refresh reconstruction deterministic across resume.
+- Added multi-season holdout evaluation with candidate, initial-policy, and legal
+  projection-baseline comparisons; projection drafting now reserves every
+  required position before filling extras and fails fast on impossible pools.
+- Added explicit frozen self-play archive sizing and archive-state checkpoint
+  restoration, preventing resumed self-play runs from changing opponent history.
+- Added parity-report provenance and a fail-closed `--require-promotion-ready`
+  gate; CUDA reports now distinguish exploratory objective drift from exact
+  CPU-authoritative promotion evidence.
+- Added risk-adjusted holdout deltas and normalized population/scenario
+  throughput summaries to every newly generated training report, making
+  cross-run generalization and runtime comparisons explicit.
 - Added benchmark-only tensorized full-season stages for weekly scoring, waivers, trades, standings, and playoffs; large-batch crossover measurements are documented.
 - Added baseline-relative robust selection for modular self-play.
 - Added warm-start immigrant policies and stronger diversity-collapse detection.

@@ -3,6 +3,7 @@ import torch
 
 from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT
 from gpu_sim.full_season import create_synthetic_season_state, run_full_cuda_season
+from gpu_sim.historical_adapter import create_historical_cuda_inputs
 from models.modular_manager_policy import ModularManagerPolicyNetwork
 
 
@@ -20,6 +21,21 @@ def test_cuda_season_draft_and_weekly_scoring_have_expected_shapes():
     assert torch.all(state.points_against >= 0)
 
 
+
+
+def test_historical_weekly_score_uses_full_espn_k_dst_lineup_contract():
+    state = create_historical_cuda_inputs(2023, players=256, device="cpu").state
+    state.draft()
+    observed = state.score_week(0)
+    expected = state._score_batched_lineups(
+        state.weekly_projections[:, 0].unsqueeze(1).expand(-1, state.team_count, -1),
+        state.weekly_actual_points[:, 0],
+        state.positions,
+        state.rosters,
+    ).scores
+    assert torch.equal(observed, expected)
+
+
 def test_cuda_season_waivers_update_rosters_and_counts():
     state = create_synthetic_season_state(scenarios=2, players=200)
     state.draft()
@@ -30,6 +46,15 @@ def test_cuda_season_waivers_update_rosters_and_counts():
     assert counts.shape == (2,)
     assert counts.max().item() >= 1
     assert len(state.waiver_counts) == 1
+
+
+
+
+def test_cuda_waivers_reject_when_player_pool_is_exhausted():
+    state = create_synthetic_season_state(scenarios=1, players=160)
+    state.draft()
+    counts = state.apply_waivers(0)
+    assert counts.tolist() == [0]
 
 
 def test_cuda_season_trades_return_per_scenario_counts():
@@ -85,6 +110,44 @@ class DeterministicLineupPolicy(torch.nn.Module):
 
     def forward(self, player_features, state_features, decision_type="lineup"):
         return self.sign * player_features[:, 2]
+
+
+class CountingPolicy(DeterministicLineupPolicy):
+    def __init__(self):
+        super().__init__(1.0)
+        self.forward_calls = 0
+
+    def forward(self, player_features, state_features, decision_type="lineup"):
+        self.forward_calls += 1
+        return super().forward(player_features, state_features, decision_type)
+
+
+def test_shared_policy_waiver_batch_matches_scalar_policy_projection():
+    state = create_synthetic_season_state(scenarios=2, players=200)
+    state.draft()
+    policy = CountingPolicy()
+    projections = state.weekly_projections[:, 0]
+    scalar_projection = torch.stack(
+        [
+            state._policy_adjusted_points(
+                projections, policy, "waiver", team_index,
+            )
+            for team_index in range(state.team_count)
+        ],
+        dim=1,
+    )
+    policy.forward_calls = 0
+
+    batched_projection = state._policy_adjusted_points_all_teams(
+        projections, policy, "waiver"
+    )
+
+    assert torch.equal(batched_projection, scalar_projection)
+    assert policy.forward_calls == 1
+
+    policy.forward_calls = 0
+    state.apply_waivers(0, policy_network=policy)
+    assert policy.forward_calls == state.team_count
 
 
 def test_policy_control_is_limited_to_candidate_team_in_season_heads():

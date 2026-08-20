@@ -5,12 +5,19 @@ scoring (including K/DST), standings, and playoffs can be checked exactly.
 ``--transactions`` enables the tensorized waiver/trade path and reports
 transaction-count deltas explicitly rather than claiming action-level parity.
 """
+# ruff: noqa: E402
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+# Keep direct ``python scripts/...py`` execution equivalent to module execution.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 
@@ -243,6 +250,9 @@ def main() -> None:
             "cpu": cpu["transaction_counts"],
             "cuda": cuda["transaction_counts"],
         },
+        "transaction_actions_exact": False if args.transactions else True,
+        "transaction_state_exact": False if args.transactions else True,
+        "transaction_reward_exact": False if args.transactions else True,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

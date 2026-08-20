@@ -98,14 +98,22 @@ def run_batched_roster_aware_draft(
         raise ValueError("positions must describe every player.")
     if len(position_minimums) != len(position_maximums):
         raise ValueError("Position minimums and maximums must have equal length.")
+    if sum(position_minimums) > rounds:
+        raise ValueError("Position minimums cannot exceed roster rounds.")
+    if any(
+        minimum < 0 or maximum < minimum
+        for minimum, maximum in zip(position_minimums, position_maximums, strict=True)
+    ):
+        raise ValueError("Position maximums must be at least their minimums.")
     scenarios, player_count = projected_points.shape
     position_count = len(position_minimums)
     if positions.max().item() >= position_count:
         raise ValueError("positions contain an unsupported position ID.")
 
     working_scores = projected_points.clone()
-    rosters = torch.empty(
+    rosters = torch.full(
         (scenarios, team_count, rounds),
+        -1,
         dtype=torch.long,
         device=projected_points.device,
     )
@@ -113,35 +121,51 @@ def run_batched_roster_aware_draft(
         positions,
         num_classes=position_count,
     ).to(torch.int16)
-    minimums = torch.tensor(position_minimums, device=projected_points.device)
     maximums = torch.tensor(position_maximums, device=projected_points.device)
     counts = torch.zeros(
         (scenarios, team_count, position_count),
         dtype=torch.int16,
         device=projected_points.device,
     )
+    next_slots = torch.zeros(team_count, dtype=torch.long, device=projected_points.device)
 
-    for round_number in range(rounds):
+    def select_player(allowed: torch.Tensor, team_indices: torch.Tensor) -> None:
+        candidates = working_scores.masked_fill(~allowed, float("-inf"))
+        if not torch.isfinite(candidates.max(dim=1).values).all():
+            # A small/filtered fixture may not contain enough players to satisfy
+            # every global minimum. Preserve the historical simulator's safe
+            # fallback instead of crashing or selecting an already-used player.
+            candidates = working_scores
+        if not torch.isfinite(candidates.max(dim=1).values).all():
+            raise ValueError("No remaining finite player is available for the roster.")
+        selected = candidates.argmax(dim=1)
+        rosters[:, team_indices, next_slots[team_indices]] = selected.unsqueeze(1)
+        counts[:, team_indices] += position_one_hot[selected].unsqueeze(1)
+        working_scores.scatter_(1, selected.unsqueeze(1), float("-inf"))
+        next_slots[team_indices] += 1
+
+    # Reserve every team's mandatory position minimum before filling extras.
+    # This prevents scarce TE/K/DST players from being consumed by earlier
+    # projection-best teams and leaving an illegal baseline roster.
+    for position, minimum in enumerate(position_minimums):
+        eligible = (positions == position).unsqueeze(0).expand(scenarios, -1)
+        for required_round in range(minimum):
+            order = (
+                range(team_count)
+                if required_round % 2 == 0
+                else range(team_count - 1, -1, -1)
+            )
+            for team_index in order:
+                select_player(eligible, torch.tensor([team_index], device=projected_points.device))
+
+    for round_number in range(sum(position_minimums), rounds):
         order = range(team_count) if round_number % 2 == 0 else range(team_count - 1, -1, -1)
         for team_index in order:
             team_counts = counts[:, team_index]
             candidate_counts = team_counts.unsqueeze(1) + position_one_hot.unsqueeze(0)
-            missing = (minimums - candidate_counts).clamp_min(0).sum(dim=2)
-            remaining_after_pick = rounds - round_number - 1
-            shape_allowed = (candidate_counts <= maximums).all(dim=2) & (
-                missing <= remaining_after_pick
-            )
-            candidates = working_scores.masked_fill(~shape_allowed, float("-inf"))
-            no_constrained_candidate = ~torch.isfinite(candidates.max(dim=1).values)
-            candidates = torch.where(
-                no_constrained_candidate.unsqueeze(1),
-                working_scores,
-                candidates,
-            )
-            selected = candidates.argmax(dim=1)
-            rosters[:, team_index, round_number] = selected
-            counts[:, team_index] += position_one_hot[selected]
-            working_scores.scatter_(1, selected.unsqueeze(1), float("-inf"))
+            allowed = (candidate_counts <= maximums).all(dim=2)
+            allowed &= torch.isfinite(working_scores)
+            select_player(allowed, torch.tensor([team_index], device=projected_points.device))
 
     return DraftBatchResult(player_indices=rosters)
 
@@ -206,6 +230,33 @@ def score_batched_lineups(
     ),
 ) -> LineupBatchResult:
     """Select legal offensive lineups by projections and score actual points."""
+
+    # Vectorized team path: flatten [scenario, team, player] into the existing
+    # exact scorer.  This preserves the per-team roster/slot semantics while
+    # eliminating one Python/kernel launch sequence per team.
+    if selection_points.ndim == 3:
+        if actual_points.ndim != 2 or rosters.ndim != 3:
+            raise ValueError(
+                "Team-batched points require [scenarios, players] actuals and rosters."
+            )
+        scenarios, teams, players = selection_points.shape
+        if actual_points.shape != (scenarios, players):
+            raise ValueError("Team-batched actual points must match scenario/player dimensions.")
+        if rosters.shape[0:2] != (scenarios, teams):
+            raise ValueError("Team-batched rosters must match scenario/team dimensions.")
+        flattened = score_batched_lineups(
+            selection_points.reshape(scenarios * teams, players),
+            actual_points.unsqueeze(1)
+            .expand(scenarios, teams, players)
+            .reshape(scenarios * teams, players),
+            positions,
+            rosters.reshape(scenarios * teams, rosters.shape[2]).unsqueeze(1),
+            lineup_position_rules,
+        )
+        return LineupBatchResult(
+            player_indices=flattened.player_indices.reshape(scenarios, teams, -1),
+            scores=flattened.scores.reshape(scenarios, teams),
+        )
 
     if selection_points.ndim != 2 or actual_points.ndim != 2:
         raise ValueError("Point tensors must have shape [scenarios, players].")

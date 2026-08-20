@@ -301,6 +301,63 @@ class CudaSeasonState:
         result[candidate_mask] = adjusted
         return result
 
+    def _policy_adjusted_points_all_teams(
+        self,
+        points: torch.Tensor,
+        policy_network: torch.nn.Module | None,
+        decision_type: str,
+    ) -> torch.Tensor:
+        """Batch shared-policy inference across all teams in one forward."""
+        if policy_network is None:
+            return points.unsqueeze(1).expand(-1, self.team_count, -1)
+        if (
+            self.active_team_policy_networks is not None
+            or self.active_policy_team_indices is not None
+        ):
+            return torch.stack(
+                [
+                    self._policy_adjusted_points(
+                        points, policy_network, decision_type, team_index,
+                        self._team_policy(team_index),
+                    )
+                    for team_index in range(self.team_count)
+                ],
+                dim=1,
+            )
+        available = self.available if self.available is not None else torch.ones(
+            (self.scenario_count, self.player_count), dtype=torch.bool, device=self.device
+        )
+        rosters = self._require_rosters()
+        player_features = []
+        state_features = []
+        for team_index in range(self.team_count):
+            team_player, team_state = _build_player_features(
+                projected_points=points.masked_fill(~available, 0.0),
+                positions=self.positions,
+                available=available,
+                rosters=rosters,
+                team_index=team_index,
+                projection_floors=self.draft_floors,
+                projection_medians=self.draft_medians,
+                projection_ceilings=self.draft_ceilings,
+                boom_probabilities=self.draft_boom_probabilities,
+            )
+            player_features.append(team_player)
+            state_features.append(team_state)
+        flat_player = torch.cat(player_features, dim=0)
+        flat_state = torch.cat(state_features, dim=0)
+        with torch.inference_mode():
+            scores = policy_network(
+                flat_player.reshape(-1, flat_player.shape[-1]),
+                flat_state.reshape(-1, flat_state.shape[-1]),
+                decision_type=decision_type,
+            ).reshape(self.team_count, self.scenario_count, self.player_count)
+        scores = scores.to(points.dtype).permute(1, 0, 2)
+        scores = (scores - scores.mean(dim=2, keepdim=True)) / scores.std(
+            dim=2, keepdim=True
+        ).clamp_min(1e-4)
+        return points.unsqueeze(1) + (0.25 * scores)
+
     def score_week(
         self,
         week: int,
@@ -312,58 +369,29 @@ class CudaSeasonState:
         self._validate_week(week)
         policy_network = policy_network or self.active_policy_network
         projections = self.weekly_projections[:, week]
-        policy_projections = (
-            torch.stack(
-                [
-                    self._policy_adjusted_points(
-                        projections,
-                        policy_network,
-                        "lineup",
-                        team_index,
-                        self._team_policy(team_index),
-                    )
-                    for team_index in range(self.team_count)
-                ],
-                dim=1,
-            )
-            if policy_network is not None
-            else projections.unsqueeze(1).expand(-1, self.team_count, -1)
+        policy_projections = self._policy_adjusted_points_all_teams(
+            projections, policy_network, "lineup"
         )
-        scores = torch.stack(
-            [
-                self._score_batched_lineups(
-                    policy_projections[:, team_index],
-                    self.weekly_actual_points[:, week],
-                    self.positions,
-                    self._require_rosters()[:, team_index : team_index + 1],
-                ).scores[:, 0]
-                for team_index in range(self.team_count)
-            ],
-            dim=1,
-        )
+        scores = self._score_batched_lineups(
+            policy_projections,
+            self.weekly_actual_points[:, week],
+            self.positions,
+            self._require_rosters(),
+        ).scores
         self.points_for += scores
         if matchups is None:
             matchups = self.default_matchups(week)
         self._record_matchups(scores, matchups)
         self.weekly_scores.append(scores)
         if policy_network is not None:
-            baseline = torch.stack(
-                [
-                    self._score_batched_lineups(
-                        projections,
-                        self.weekly_actual_points[:, week],
-                        self.positions,
-                        self._require_rosters()[:, team_index : team_index + 1],
-                    ).scores[:, 0]
-                    for team_index in range(self.team_count)
-                ],
-                dim=1,
-            )
+            baseline = score_batched_lineups(
+                projections.unsqueeze(1).expand(-1, self.team_count, -1),
+                self.weekly_actual_points[:, week],
+                self.positions,
+                self._require_rosters(),
+            ).scores
             lineup_gain = scores - baseline
-            if (
-                self.active_team_policy_networks is None
-                and self.active_policy_team_indices is not None
-            ):
+            if self.active_policy_team_indices is not None:
                 team_ids = torch.arange(self.team_count, device=self.device).unsqueeze(0)
                 candidate_mask = team_ids == self.active_policy_team_indices.unsqueeze(1)
                 lineup_gain = torch.where(
@@ -386,105 +414,64 @@ class CudaSeasonState:
         ranking_value = self.wins.to(torch.float32) * 100000.0 + self.points_for
         priority = torch.argsort(ranking_value, dim=1, descending=False)
         accepted_count = torch.zeros(self.scenario_count, dtype=torch.int32, device=self.device)
+        counterfactual_gain = torch.zeros(self.scenario_count, device=self.device)
         projections = self.weekly_projections[:, week]
-        policy_projection_by_team = (
-            torch.stack(
-                [
-                    self._policy_adjusted_points(
-                        projections,
-                        policy_network,
-                        "waiver",
-                        team_index,
-                        self._team_policy(team_index),
-                    )
-                    for team_index in range(self.team_count)
-                ],
+        for rank in range(self.team_count):
+            priority = torch.argsort(
+                self.wins.to(torch.float32) * 100000.0 + self.points_for,
                 dim=1,
+                descending=False,
+                stable=True,
             )
-            if policy_network is not None
-            else projections.unsqueeze(1).expand(-1, self.team_count, -1)
-        )
-
-        # Select one claim per inverse-standings rank while updating a local
-        # availability mask. Lineup legality and improvement are then scored
-        # for every rank in two large tensor passes instead of two launches per
-        # team. A rejected claim is restored before later ranks are applied.
-        working_available = self.available.clone()
-        current_rosters_by_rank = self._require_rosters()[batch.unsqueeze(1), priority]
-        add_players_by_rank = torch.empty_like(priority)
-        drop_slots_by_rank = torch.empty_like(priority)
-        for rank in range(self.team_count):
-            team_projections = policy_projection_by_team[batch, priority[:, rank]]
-            add_scores = team_projections.masked_fill(~working_available, float("-inf"))
-            add_players = add_scores.argmax(dim=1)
-            add_players_by_rank[:, rank] = add_players
-            working_available.scatter_(1, add_players.unsqueeze(1), False)
-            current_values = team_projections.gather(
-                1,
-                current_rosters_by_rank[:, rank],
-            )
-            drop_slots_by_rank[:, rank] = current_values.argmin(dim=1)
-
-        candidate_rosters_by_rank = current_rosters_by_rank.clone()
-        rank_batch = torch.arange(self.scenario_count, device=self.device).unsqueeze(1)
-        rank_indices = torch.arange(self.team_count, device=self.device).unsqueeze(0)
-        candidate_rosters_by_rank[rank_batch, rank_indices, drop_slots_by_rank] = (
-            add_players_by_rank
-        )
-        flat_rosters = current_rosters_by_rank.reshape(
-            self.scenario_count * self.team_count,
-            1,
-            self.roster_size,
-        )
-        flat_candidates = candidate_rosters_by_rank.reshape(
-            self.scenario_count * self.team_count,
-            1,
-            self.roster_size,
-        )
-        flat_projections = policy_projection_by_team[batch.unsqueeze(1), priority].reshape(
-            self.scenario_count * self.team_count, self.player_count
-        )
-        current_scores = self._score_batched_lineups(
-            flat_projections,
-            flat_projections,
-            self.positions,
-            flat_rosters,
-        ).scores.reshape(self.scenario_count, self.team_count)
-        candidate_scores = self._score_batched_lineups(
-            flat_projections,
-            flat_projections,
-            self.positions,
-            flat_candidates,
-        ).scores.reshape(self.scenario_count, self.team_count)
-        accepted = torch.isfinite(working_available.max(dim=1).values).unsqueeze(1) & (
-            candidate_scores - current_scores >= minimum_improvement
-        )
-        accepted_count = accepted.sum(dim=1).to(torch.int32)
-        waiver_gain = (candidate_scores - current_scores).clamp_min(0.0) * accepted
-        if self.active_team_policy_networks is None and self.active_policy_team_indices is not None:
-            team_ids = torch.arange(self.team_count, device=self.device).unsqueeze(0)
-            candidate_mask = team_ids == self.active_policy_team_indices.unsqueeze(1)
-            waiver_gain = torch.where(candidate_mask, waiver_gain, torch.zeros_like(waiver_gain))
-        counterfactual_gain = waiver_gain.sum(dim=1)
-
-        for rank in range(self.team_count):
-            update_mask = accepted[:, rank]
             team_indices = priority[:, rank]
-            add_players = add_players_by_rank[:, rank]
-            drop_slots = drop_slots_by_rank[:, rank]
-            old_players = (
-                current_rosters_by_rank[:, rank]
-                .gather(
-                    1,
-                    drop_slots.unsqueeze(1),
-                )
-                .squeeze(1)
+            policy_projection_by_team = self._policy_adjusted_points_all_teams(
+                projections, policy_network, "waiver"
             )
+            team_projections = policy_projection_by_team[
+                batch, team_indices
+            ]
+            available_before = self.available.clone()
+            had_available_player = available_before.any(dim=1)
+            add_scores = team_projections.masked_fill(~available_before, float("-inf"))
+            add_players = torch.argsort(add_scores, dim=1, descending=True, stable=True)[:, 0]
+            selected_valid = had_available_player & available_before.gather(
+                1, add_players.unsqueeze(1)
+            ).squeeze(1)
+            current_rosters = self._require_rosters()[batch, team_indices]
+            current_values = team_projections.gather(1, current_rosters)
+            drop_slots = torch.argsort(current_values, dim=1, stable=True)[:, 0]
+            candidate_rosters = current_rosters.clone()
+            candidate_rosters[batch, drop_slots] = add_players
+            current_scores = self._score_batched_lineups(
+                team_projections,
+                team_projections,
+                self.positions,
+                current_rosters.unsqueeze(1),
+            ).scores[:, 0]
+            candidate_scores = self._score_batched_lineups(
+                team_projections,
+                team_projections,
+                self.positions,
+                candidate_rosters.unsqueeze(1),
+            ).scores[:, 0]
+            accepted = selected_valid & (
+                candidate_scores - current_scores >= minimum_improvement
+            )
+            old_players = current_rosters.gather(1, drop_slots.unsqueeze(1)).squeeze(1)
             self._require_rosters()[
-                batch[update_mask], team_indices[update_mask], drop_slots[update_mask]
-            ] = add_players[update_mask]
-            self.available[batch[update_mask], add_players[update_mask]] = False
-            self.available[batch[update_mask], old_players[update_mask]] = True
+                batch[accepted], team_indices[accepted], drop_slots[accepted]
+            ] = add_players[accepted]
+            self.available[batch[accepted], add_players[accepted]] = False
+            self.available[batch[accepted], old_players[accepted]] = True
+            accepted_count += accepted.to(torch.int32)
+            rank_gain = (candidate_scores - current_scores).clamp_min(0.0) * accepted
+            if self.active_policy_team_indices is not None:
+                rank_gain = torch.where(
+                    team_indices == self.active_policy_team_indices,
+                    rank_gain,
+                    torch.zeros_like(rank_gain),
+                )
+            counterfactual_gain += rank_gain
 
         self.waiver_counts.append(accepted_count)
         if policy_network is not None:
@@ -494,7 +481,7 @@ class CudaSeasonState:
     def apply_trades(
         self,
         week: int,
-        top_k: int = 3,
+        top_k: int | None = None,
         minimum_improvement: float = 0.5,
         policy_network: torch.nn.Module | None = None,
     ) -> torch.Tensor:
@@ -505,22 +492,8 @@ class CudaSeasonState:
         if self.team_count < 2:
             return torch.zeros(self.scenario_count, dtype=torch.int32, device=self.device)
         projections = self.weekly_projections[:, week]
-        policy_projection_by_team = (
-            torch.stack(
-                [
-                    self._policy_adjusted_points(
-                        projections,
-                        policy_network,
-                        "trade",
-                        team_index,
-                        self._team_policy(team_index),
-                    )
-                    for team_index in range(self.team_count)
-                ],
-                dim=1,
-            )
-            if policy_network is not None
-            else projections.unsqueeze(1).expand(-1, self.team_count, -1)
+        policy_projection_by_team = self._policy_adjusted_points_all_teams(
+            projections, policy_network, "trade"
         )
         rosters = self._require_rosters()
         baseline = torch.stack(
@@ -535,7 +508,9 @@ class CudaSeasonState:
             ],
             dim=1,
         )
-        top_k = min(top_k, self.roster_size)
+        top_k = self.roster_size if top_k is None else min(top_k, self.roster_size)
+        if top_k < 1:
+            raise ValueError("top_k must be positive when supplied.")
 
         pair_indices = torch.triu_indices(
             self.team_count,
@@ -551,8 +526,12 @@ class CudaSeasonState:
         pair_projection = policy_projection_by_team[:, pair_a]
         values_a = pair_projection.gather(2, pair_rosters_a)
         values_b = pair_projection.gather(2, pair_rosters_b)
-        _, top_slots_a = values_a.topk(top_k, dim=2)
-        _, top_slots_b = values_b.topk(top_k, dim=2)
+        top_slots_a = torch.argsort(values_a, dim=2, descending=True, stable=True)[
+            :, :, :top_k
+        ]
+        top_slots_b = torch.argsort(values_b, dim=2, descending=True, stable=True)[
+            :, :, :top_k
+        ]
         a_slots = top_slots_a.unsqueeze(3).expand(-1, -1, -1, top_k)
         a_slots = a_slots.reshape(self.scenario_count, pair_count, combos)
         b_slots = top_slots_b.unsqueeze(2).expand(-1, -1, top_k, -1)
@@ -642,10 +621,16 @@ class CudaSeasonState:
         self.trade_counts.append(accepted_count)
         if policy_network is not None:
             trade_gain = best_gain.clamp_min(0.0)
-            if (
-                self.active_team_policy_networks is None
-                and self.active_policy_team_indices is not None
-            ):
+            if self.active_team_policy_networks is not None:
+                team_gains = torch.zeros(
+                    self.scenario_count,
+                    self.team_count,
+                    device=self.device,
+                )
+                team_gains.scatter_add_(1, best_a.unsqueeze(1), trade_gain.unsqueeze(1))
+                team_gains.scatter_add_(1, best_b.unsqueeze(1), trade_gain.unsqueeze(1))
+                trade_gain = team_gains
+            elif self.active_policy_team_indices is not None:
                 candidate_trade = (best_a == self.active_policy_team_indices) | (
                     best_b == self.active_policy_team_indices
                 )
@@ -741,22 +726,8 @@ class CudaSeasonState:
         # projections, while playoff parity uses draft projections.
         projections = self.draft_projections
         policy_network = self.active_policy_network
-        policy_projections = (
-            torch.stack(
-                [
-                    self._policy_adjusted_points(
-                        projections,
-                        policy_network,
-                        "lineup",
-                        team_index,
-                        self._team_policy(team_index),
-                    )
-                    for team_index in range(self.team_count)
-                ],
-                dim=1,
-            )
-            if policy_network is not None
-            else projections.unsqueeze(1).expand(-1, self.team_count, -1)
+        policy_projections = self._policy_adjusted_points_all_teams(
+            projections, policy_network, "lineup"
         )
         return torch.stack(
             [
@@ -913,8 +884,8 @@ def run_full_cuda_season(
     regular_season_weeks = min(14, state.week_count - 3)
     for week in range(regular_season_weeks):
         if enable_transactions:
-            state.apply_waivers(week, policy_network=policy_network)
             state.apply_trades(week, policy_network=policy_network)
+            state.apply_waivers(week, policy_network=policy_network)
         state.score_week(week, policy_network=policy_network)
     state.run_playoffs()
     return state

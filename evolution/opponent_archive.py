@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import random
 from dataclasses import dataclass
 
@@ -22,6 +23,42 @@ class OpponentArchive:
         self.max_size = max_size
         self.initial_rating = initial_rating
         self.entries: list[ArchivedOpponent] = []
+
+    def to_state_dict(self) -> dict[str, object]:
+        return {
+            "max_size": self.max_size,
+            "initial_rating": self.initial_rating,
+            "entries": [
+                {
+                    "state_dict": {
+                        key: value.detach().cpu().clone()
+                        for key, value in entry.policy.state_dict().items()
+                    },
+                    "rating": entry.rating,
+                    "label": entry.label,
+                }
+                for entry in self.entries
+            ],
+        }
+
+    @classmethod
+    def from_state_dict(
+        cls,
+        state: dict[str, object],
+        policy_template: torch.nn.Module,
+        device: torch.device | str,
+    ) -> OpponentArchive:
+        archive = cls(
+            max_size=int(state["max_size"]),
+            initial_rating=float(state["initial_rating"]),
+        )
+        for item in state.get("entries", []):
+            policy = copy.deepcopy(policy_template)
+            policy.load_state_dict(item["state_dict"])
+            policy.to(device)
+            entry = archive.add(policy, label=str(item.get("label", "")))
+            entry.rating = float(item.get("rating", archive.initial_rating))
+        return archive
 
     def add(self, policy: torch.nn.Module, label: str = "") -> ArchivedOpponent:
         entry = ArchivedOpponent(policy=policy, rating=self.initial_rating, label=label)

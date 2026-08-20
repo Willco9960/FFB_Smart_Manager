@@ -11,6 +11,7 @@ from fantasy_engine.lineup import (
 )
 from fantasy_engine.player import Player
 from fantasy_engine.team import Team
+from fantasy_engine.transaction_contract import stable_best
 from fantasy_engine.transactions import WaiverClaim
 
 
@@ -41,9 +42,10 @@ class GenomeWaiverAgent:
             return None
 
         draft_agent = GenomeDraftAgent(genome=self.genome)
-        add_player = max(
+        add_player = stable_best(
             available_players,
-            key=lambda player: draft_agent.score_player(player, available_players),
+            score=lambda player: draft_agent.score_player(player, available_players),
+            tie_key=lambda player: (player.name, player.position),
         )
         drop_player = self.find_drop_candidate(
             team,
@@ -95,7 +97,8 @@ class GenomeWaiverAgent:
         if not legal_drop_candidates:
             return None
 
-        return min(
+        return stable_best(
             legal_drop_candidates,
-            key=lambda player: draft_agent.score_player(player, available_players),
+            score=lambda player: -draft_agent.score_player(player, available_players),
+            tie_key=lambda player: (player.name, player.position),
         )

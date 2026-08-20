@@ -9,6 +9,7 @@ from fantasy_engine.lineup import (
     build_best_starting_lineup,
 )
 from fantasy_engine.team import Team
+from fantasy_engine.transaction_contract import stable_best
 from fantasy_engine.transactions import TradeProposal
 
 
@@ -40,8 +41,7 @@ class GenomeTradeAgent:
         if baseline_score is None:
             return None
 
-        best_proposal = None
-        best_combined_improvement = 0.0
+        proposals = []
 
         for opposing_team in opposing_teams:
             opposing_baseline_score = self.get_projected_lineup_score(opposing_team)
@@ -84,17 +84,26 @@ class GenomeTradeAgent:
 
                     combined_improvement = team_improvement + opposing_improvement
 
-                    if combined_improvement > best_combined_improvement:
-                        best_combined_improvement = combined_improvement
-                        best_proposal = TradeProposal(
+                    proposals.append(
+                        (combined_improvement, TradeProposal(
                             proposing_team_name=team.name,
                             receiving_team_name=opposing_team.name,
                             offered_players=(offered_player,),
                             requested_players=(requested_player,),
                             week=week,
-                        )
+                        )))
 
-        return best_proposal
+        if not proposals:
+            return None
+        return stable_best(
+            proposals,
+            score=lambda item: item[0],
+            tie_key=lambda item: (
+                item[1].receiving_team_name,
+                tuple((player.name, player.position) for player in item[1].offered_players),
+                tuple((player.name, player.position) for player in item[1].requested_players),
+            ),
+        )[1]
 
     def get_projected_lineup_score(self, team: Team) -> float | None:
         lineup = build_best_starting_lineup(

@@ -73,6 +73,8 @@ class ModularManagerPolicyNetwork(nn.Module):
         hidden_size: int = 64,
     ):
         super().__init__()
+        if hidden_size < 16 or hidden_size % 4:
+            raise ValueError("hidden_size must be at least 16 and divisible by four.")
         self.player_feature_count = player_feature_count
         self.state_feature_count = state_feature_count
         self.hidden_size = hidden_size

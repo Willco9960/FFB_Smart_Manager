@@ -54,6 +54,33 @@ def test_create_weekly_scored_roster_applies_only_current_week_points():
     assert weekly_roster[0].actual_score == 22.0
 
 
+def test_weekly_points_do_not_fall_back_to_colliding_name_when_id_exists():
+    roster = [
+        Player(
+            name="Shared Name",
+            position="RB",
+            team="ATL",
+            projected_score=10.0,
+            player_id="id-a",
+        ),
+        Player(
+            name="Shared Name",
+            position="RB",
+            team="ATL",
+            projected_score=9.0,
+            player_id="id-b",
+        ),
+    ]
+    scored = create_weekly_scored_roster(
+        roster,
+        {
+            ("id-a", "RB"): 4.0,
+            ("Shared Name", "RB"): 99.0,
+        },
+    )
+    assert [player.actual_score for player in scored] == [4.0, 0.0]
+
+
 def test_score_weekly_team_uses_projection_for_lineup_selection():
     team = create_complete_offensive_roster("Team 1")
     weekly_points = {(player.name, player.position): 10.0 for player in team.roster}

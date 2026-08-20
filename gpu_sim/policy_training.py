@@ -9,6 +9,7 @@ remain enabled in the tensorized season engine.
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import random
 import warnings
@@ -61,9 +62,90 @@ class CudaGenerationMetrics:
     generations_per_hour: float
     best_transaction_reward: float = 0.0
     best_lineup_efficiency: float = 0.0
+    population_diversity: float = 0.0
+    mutation_strength: float = 0.0
 
     def to_dict(self) -> dict[str, float | int]:
         return self.__dict__.copy()
+
+
+def select_training_season_indices(
+    season_count: int,
+    subsample_size: int,
+    *,
+    generation: int,
+    replay_interval: int = 0,
+) -> list[int]:
+    """Select deterministic episodic replay seasons.
+
+    Index zero is intentionally retained in every subsampled episode.  When
+    training begins at 2000 this is the 2000 season, so the oldest reliable
+    season is not silently dropped.  A positive interval performs a full-window
+    replay on each interval boundary.
+    """
+    if season_count < 1:
+        raise ValueError("season_count must be positive.")
+    if subsample_size < 0 or subsample_size > season_count:
+        raise ValueError("subsample_size must be zero or within season_count.")
+    if generation < 1:
+        raise ValueError("generation must be positive.")
+    if replay_interval < 0:
+        raise ValueError("replay_interval cannot be negative.")
+    if not subsample_size:
+        return list(range(season_count))
+    if replay_interval and generation % replay_interval == 0:
+        return list(range(season_count))
+    if subsample_size == 1:
+        return [0]
+    return [
+        round(index * (season_count - 1) / (subsample_size - 1))
+        for index in range(subsample_size)
+    ]
+
+
+def summarize_cuda_throughput(
+    metrics,
+    *,
+    population: int,
+    training_seasons: int,
+    scenario_repeats: int,
+) -> dict[str, object]:
+    """Summarize measured generation and scenario throughput.
+
+    The stable rate is based on per-generation deltas, excluding the first
+    cumulative timing sample (startup and model loading).  This is a measured
+    calibration summary, not a projection from a single fast generation.
+    """
+    if not metrics:
+        raise ValueError("At least one generation metric is required.")
+    if population < 1 or training_seasons < 1 or scenario_repeats < 1:
+        raise ValueError("Throughput dimensions must be positive.")
+    rates = []
+    previous = 0.0
+    for metric in metrics:
+        elapsed = float(metric.elapsed_seconds)
+        delta = elapsed - previous
+        if delta <= 0.0:
+            raise ValueError("Generation elapsed seconds must increase strictly.")
+        if previous > 0.0:
+            rates.append(3600.0 / delta)
+        previous = elapsed
+    if not rates:
+        rates = [3600.0 / previous]
+    stable_gph = sum(rates) / len(rates)
+    scenario_per_generation = population * training_seasons * scenario_repeats
+    return {
+        "elapsed_seconds": previous,
+        "generations_per_hour": len(metrics) / (previous / 3600.0),
+        "stable_generations_per_hour": stable_gph,
+        "stable_generations_per_hour_range": [min(rates), max(rates)],
+        "population_evaluations": len(metrics) * population * training_seasons,
+        "scenario_evaluations": len(metrics) * scenario_per_generation,
+        "normalized_scenario_evaluations_per_hour": stable_gph * scenario_per_generation,
+        "population": population,
+        "training_seasons": training_seasons,
+        "scenario_repeats": scenario_repeats,
+    }
 
 
 def clone_cuda_state(
@@ -146,6 +228,22 @@ def fork_cuda_state(
     )
 
 
+def scenario_bank_digest(scenario_bank: list[CudaSeasonState]) -> str:
+    """Hash immutable tensor contents used to define a scenario bank."""
+    digest = hashlib.sha256()
+    for season_index, state in enumerate(scenario_bank):
+        digest.update(f"season-index:{season_index};".encode())
+        for name, value in sorted(state.__dict__.items()):
+            if not isinstance(value, torch.Tensor):
+                continue
+            tensor = value.detach().cpu().contiguous()
+            digest.update(name.encode())
+            digest.update(str(tensor.dtype).encode())
+            digest.update(repr(tuple(tensor.shape)).encode())
+            digest.update(tensor.numpy().tobytes())
+    return digest.hexdigest()
+
+
 def prepare_cuda_scenario_bank(
     historical_states: list[CudaSeasonState],
     *,
@@ -186,7 +284,9 @@ def _candidate_fitness(
     champion = (state.champions == candidate_team_indices).to(torch.float32)
     transaction_reward = torch.zeros_like(points_for)
     for gains in (*state.waiver_policy_gains, *state.trade_policy_gains):
-        transaction_reward = transaction_reward + gains
+        transaction_reward = transaction_reward + (
+            gains[batch, candidate_team_indices] if gains.ndim == 2 else gains
+        )
     lineup_efficiency = torch.zeros_like(points_for)
     for gains in state.lineup_policy_gains:
         lineup_efficiency = lineup_efficiency + gains[
@@ -212,7 +312,9 @@ def _candidate_auxiliary_metrics(
     batch = torch.arange(state.scenario_count, device=state.device)
     transaction_reward = torch.zeros(state.scenario_count, device=state.device)
     for gains in (*state.waiver_policy_gains, *state.trade_policy_gains):
-        transaction_reward = transaction_reward + gains
+        transaction_reward = transaction_reward + (
+            gains[batch, candidate_team_indices] if gains.ndim == 2 else gains
+        )
     lineup_efficiency = torch.zeros(state.scenario_count, device=state.device)
     for gains in state.lineup_policy_gains:
         lineup_efficiency = lineup_efficiency + gains[batch, candidate_team_indices]
@@ -285,7 +387,7 @@ class CudaPolicyEnsemble(torch.nn.Module):
 
 @torch.inference_mode()
 def evaluate_cuda_policy(
-    policy: ModularManagerPolicyNetwork,
+    policy: ModularManagerPolicyNetwork | None,
     historical_states: list[CudaSeasonState],
     *,
     scenario_repeats: int = 8,
@@ -305,11 +407,13 @@ def evaluate_cuda_policy(
         raise ValueError("At least one historical state is required.")
     if risk_penalty < 0.0:
         raise ValueError("risk_penalty cannot be negative.")
-    policy.eval()
+    if policy is not None:
+        policy.eval()
     device = historical_states[0].device
-    policy.to(device)
+    if policy is not None:
+        policy.to(device)
     scoring_policy = policy
-    if compile_policy and device.type == "cuda":
+    if compile_policy and device.type == "cuda" and policy is not None:
         if importlib.util.find_spec("triton") is None:
             warnings.warn(
                 "torch.compile requested but Triton is unavailable; "
@@ -334,56 +438,75 @@ def evaluate_cuda_policy(
     champion_values = []
     transaction_values = []
     lineup_efficiency_values = []
-    templates = historical_states if scenario_bank is None else scenario_bank
+    if scenario_bank is None:
+        scenario_bank = prepare_cuda_scenario_bank(
+            historical_states,
+            scenario_repeats=scenario_repeats,
+            projection_noise=projection_noise,
+            seed=seed,
+        )
+    templates = scenario_bank
     for template in templates:
-        state = fork_cuda_state(template, contract_digest=fitness_contract.digest())
-        candidate_team_indices = torch.zeros(state.scenario_count, dtype=torch.long, device=device)
-        team_policy_networks = None
-        if opponent_policies:
-            archive = [opponent for opponent in opponent_policies if opponent is not policy]
-            if not archive:
-                archive = [policy]
-            team_policy_networks = [policy]
-            team_policy_networks.extend(
-                archive[index % len(archive)] for index in range(state.team_count - 1)
+        assignment_count = template.team_count if opponent_policies else 1
+        for candidate_team in range(assignment_count):
+            state = fork_cuda_state(template, contract_digest=fitness_contract.digest())
+            candidate_team_indices = torch.full(
+                (state.scenario_count,),
+                candidate_team,
+                dtype=torch.long,
+                device=device,
             )
-        run_full_cuda_season(
-            state,
-            enable_transactions=enable_transactions,
-            policy_network=scoring_policy,
-            team_policy_networks=team_policy_networks,
-            policy_team_indices=candidate_team_indices,
-            draft_anchor_weight=draft_anchor_weight,
-            fitness_contract=fitness_contract,
-        )
-        fitness, wins, points_for, playoff, champion = _candidate_fitness(
-            state, candidate_team_indices, fitness_contract
-        )
-        transaction_reward, lineup_efficiency = _candidate_auxiliary_metrics(
-            state, candidate_team_indices
-        )
-        fitness_values.append(fitness.mean())
-        wins_values.append(wins.mean())
-        points_values.append(points_for.mean())
-        playoff_values.append(playoff.to(torch.float32).mean())
-        champion_values.append(champion.mean())
-        transaction_values.append(transaction_reward.mean())
-        lineup_efficiency_values.append(lineup_efficiency.mean())
+            team_policy_networks = None
+            if opponent_policies:
+                if policy is None:
+                    raise ValueError("opponent_policies require a candidate policy.")
+                archive = [opponent for opponent in opponent_policies if opponent is not policy]
+                if not archive:
+                    archive = [policy]
+                team_policy_networks = []
+                for team_index in range(state.team_count):
+                    if team_index == candidate_team:
+                        team_policy_networks.append(policy)
+                    else:
+                        archive_index = (team_index - (team_index > candidate_team)) % len(archive)
+                        team_policy_networks.append(archive[archive_index])
+            run_full_cuda_season(
+                state,
+                enable_transactions=enable_transactions,
+                policy_network=scoring_policy,
+                team_policy_networks=team_policy_networks,
+                policy_team_indices=candidate_team_indices,
+                draft_anchor_weight=draft_anchor_weight,
+                fitness_contract=fitness_contract,
+            )
+            fitness, wins, points_for, playoff, champion = _candidate_fitness(
+                state, candidate_team_indices, fitness_contract
+            )
+            transaction_reward, lineup_efficiency = _candidate_auxiliary_metrics(
+                state, candidate_team_indices
+            )
+            fitness_values.append(fitness.reshape(-1))
+            wins_values.append(wins.reshape(-1))
+            points_values.append(points_for.reshape(-1))
+            playoff_values.append(playoff.to(torch.float32).reshape(-1))
+            champion_values.append(champion.reshape(-1))
+            transaction_values.append(transaction_reward.reshape(-1))
+            lineup_efficiency_values.append(lineup_efficiency.reshape(-1))
     elapsed = perf_counter() - started
-    fitness_tensor = torch.stack(fitness_values)
+    fitness_tensor = torch.cat(fitness_values)
     fitness = float(fitness_tensor.mean().item())
     fitness_stddev = float(fitness_tensor.std(unbiased=False).item())
     return CudaPolicyEvaluation(
         fitness=fitness,
         fitness_stddev=fitness_stddev,
         risk_adjusted_fitness=fitness - (risk_penalty * fitness_stddev),
-        wins=float(torch.stack(wins_values).mean().item()),
-        points_for=float(torch.stack(points_values).mean().item()),
-        playoff_rate=float(torch.stack(playoff_values).mean().item()),
-        championship_rate=float(torch.stack(champion_values).mean().item()),
+        wins=float(torch.cat(wins_values).mean().item()),
+        points_for=float(torch.cat(points_values).mean().item()),
+        playoff_rate=float(torch.cat(playoff_values).mean().item()),
+        championship_rate=float(torch.cat(champion_values).mean().item()),
         elapsed_seconds=elapsed,
-        transaction_reward=float(torch.stack(transaction_values).mean().item()),
-        lineup_efficiency=float(torch.stack(lineup_efficiency_values).mean().item()),
+        transaction_reward=float(torch.cat(transaction_values).mean().item()),
+        lineup_efficiency=float(torch.cat(lineup_efficiency_values).mean().item()),
     )
 
 
@@ -401,6 +524,8 @@ def evaluate_cuda_policy_population(
     risk_penalty: float = 0.10,
     fitness_contract: FitnessContract = ESPN_FITNESS_CONTRACT,
     exact_policy_head_parity: bool = True,
+    compile_policy: bool = False,
+    opponent_policies: list[ModularManagerPolicyNetwork] | None = None,
 ) -> list[CudaPolicyEvaluation]:
     """Evaluate all policies in one flattened CUDA scenario batch."""
 
@@ -426,6 +551,7 @@ def evaluate_cuda_policy_population(
                 seed=seed,
                 draft_anchor_weight=draft_anchor_weight,
                 risk_penalty=risk_penalty,
+                compile_policy=compile_policy,
                 fitness_contract=fitness_contract,
             )
             for policy in policies
@@ -439,6 +565,16 @@ def evaluate_cuda_policy_population(
         )
     device = scenario_bank[0].device
     ensemble = CudaPolicyEnsemble(policies).to(device)
+    scoring_policy = ensemble
+    if compile_policy and device.type == "cuda":
+        try:
+            scoring_policy = torch.compile(ensemble, mode="reduce-overhead", dynamic=False)
+        except Exception as error:  # pragma: no cover - depends on local compiler
+            warnings.warn(
+                f"torch.compile unavailable for batched ensemble; using eager CUDA: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
     population_size = len(policies)
     season_fitness: list[list[torch.Tensor]] = [[] for _ in policies]
     season_wins: list[list[torch.Tensor]] = [[] for _ in policies]
@@ -476,13 +612,30 @@ def evaluate_cuda_policy_population(
             draft_ceilings=repeat_optional(template.draft_ceilings),
             draft_boom_probabilities=repeat_optional(template.draft_boom_probabilities),
         )
-        candidate_team_indices = (
-            torch.arange(scenarios, device=device) % state.team_count
-        ).repeat(population_size)
+        if opponent_policies is None:
+            candidate_team_indices = (
+                torch.arange(scenarios, device=device) % state.team_count
+            ).repeat(population_size)
+        else:
+            candidate_team_indices = torch.zeros(
+                population_size * scenarios,
+                dtype=torch.long,
+                device=device,
+            )
+        team_policy_networks = None
+        if opponent_policies is not None:
+            if len(opponent_policies) < state.team_count - 1:
+                raise ValueError("opponent_policies must cover every non-candidate team.")
+            team_policy_networks = [scoring_policy]
+            for opponent in opponent_policies[: state.team_count - 1]:
+                opponent = opponent.to(device)
+                opponent.eval()
+                team_policy_networks.append(opponent)
         run_full_cuda_season(
             state,
             enable_transactions=enable_transactions,
-            policy_network=ensemble,
+            policy_network=scoring_policy,
+            team_policy_networks=team_policy_networks,
             policy_team_indices=candidate_team_indices,
             draft_anchor_weight=draft_anchor_weight,
             fitness_contract=fitness_contract,
@@ -497,7 +650,7 @@ def evaluate_cuda_policy_population(
         )
         for policy_index in range(population_size):
             window = slice(policy_index * scenarios, (policy_index + 1) * scenarios)
-            season_fitness[policy_index].append(fitness[window].mean())
+            season_fitness[policy_index].append(fitness[window].reshape(-1))
             season_wins[policy_index].append(wins[window].mean())
             season_points[policy_index].append(points_for[window].mean())
             season_playoffs[policy_index].append(playoff[window].to(torch.float32).mean())
@@ -565,6 +718,8 @@ def save_cuda_training_state(
     best_policy: ModularManagerPolicyNetwork,
     metrics: list[CudaGenerationMetrics],
     rng_state,
+    run_manifest: dict | None = None,
+    opponent_archive: OpponentArchive | None = None,
 ) -> Path:
     """Save enough state to resume the same evolutionary population."""
 
@@ -582,6 +737,13 @@ def save_cuda_training_state(
             ),
             "fitness_contract": ESPN_FITNESS_CONTRACT.to_dict(),
             "fitness_contract_digest": ESPN_FITNESS_CONTRACT.digest(),
+            "run_manifest": copy.deepcopy(run_manifest),
+            "scenario_bank_digest": (
+                None if run_manifest is None else run_manifest.get("scenario_bank_digest")
+            ),
+            "opponent_archive": (
+                None if opponent_archive is None else opponent_archive.to_state_dict()
+            ),
         },
         output_path,
     )
@@ -606,6 +768,39 @@ def validate_cuda_training_state_contract(
         )
 
 
+def validate_cuda_training_state_manifest(
+    state: dict,
+    expected_manifest: dict,
+) -> None:
+    """Reject resumes made with different data, architecture, or search settings."""
+    actual_manifest = state.get("run_manifest")
+    if actual_manifest is None:
+        raise ValueError(
+            "Resume checkpoint is missing run_manifest; start a new run rather "
+            "than mixing data or search configurations."
+        )
+    mismatches = {
+        key: (actual_manifest.get(key), expected_manifest.get(key))
+        for key in expected_manifest
+        if actual_manifest.get(key) != expected_manifest.get(key)
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{key}={actual!r} (expected {expected!r})"
+            for key, (actual, expected) in mismatches.items()
+        )
+        raise ValueError(f"Resume checkpoint run manifest does not match: {details}")
+
+
+def validate_cuda_policy_checkpoint_manifest(
+    checkpoint: dict,
+    expected_manifest: dict,
+) -> None:
+    """Validate identity on a published best-policy checkpoint too."""
+    validate_cuda_training_state_contract(checkpoint)
+    validate_cuda_training_state_manifest(checkpoint, expected_manifest)
+
+
 def mutate_policy(
     policy: ModularManagerPolicyNetwork,
     rng: random.Random,
@@ -615,8 +810,8 @@ def mutate_policy(
     child = clone_policy(policy)
     with torch.no_grad():
         for name, parameter in child.named_parameters():
-            if adapter_only and not (
-                name.startswith("decision_heads.") or name.startswith("value_head.")
+            if name.startswith("value_head.") or (
+                adapter_only and not name.startswith("decision_heads.")
             ):
                 continue
             scale = parameter.detach().float().std(unbiased=False).item() or 0.01
@@ -636,8 +831,8 @@ def crossover_policy(
         second_state = second.state_dict()
         child_state = {}
         for name, first_value in first.state_dict().items():
-            if adapter_only and not (
-                name.startswith("decision_heads.") or name.startswith("value_head.")
+            if name.startswith("value_head.") or (
+                adapter_only and not name.startswith("decision_heads.")
             ):
                 child_state[name] = first_value.clone()
                 continue
@@ -645,6 +840,28 @@ def crossover_policy(
             child_state[name] = torch.where(mask, first_value, second_state[name])
         child.load_state_dict(child_state)
     return child
+
+
+def policy_population_diversity(
+    policies: list[ModularManagerPolicyNetwork],
+    *,
+    adapter_only: bool = True,
+) -> float:
+    """Return mean normalized parameter distance across a population."""
+    if len(policies) < 2:
+        return 0.0
+    vectors = []
+    for policy in policies:
+        values = [
+            parameter.detach().float().reshape(-1)
+            for name, parameter in policy.named_parameters()
+            if not adapter_only or name.startswith("decision_heads.")
+        ]
+        vectors.append(torch.cat(values))
+    stacked = torch.stack(vectors)
+    distances = torch.pdist(stacked)
+    scale = stacked.std(dim=0, unbiased=False).mean().clamp_min(1e-6)
+    return float((distances.mean() / scale).item())
 
 
 def train_cuda_policy_population(
@@ -668,17 +885,48 @@ def train_cuda_policy_population(
     batch_population: bool = True,
     exact_policy_head_parity: bool = True,
     self_play: bool = False,
+    opponent_archive_size: int = 64,
+    self_play_interval: int = 1,
     generation_callback=None,
     checkpoint_callback=None,
     adapter_only: bool = True,
     immigrant_fraction: float = 0.10,
+    scenario_refresh_generations: int = 0,
+    season_subsample_size: int = 0,
+    season_replay_interval: int = 0,
+    require_complete_fitness_contract: bool = False,
+    run_manifest: dict | None = None,
 ) -> tuple[ModularManagerPolicyNetwork, list[CudaGenerationMetrics]]:
     """Evolve neural manager policies using CUDA full-season fitness."""
+
+    if require_complete_fitness_contract and enable_transactions:
+        unsupported = {
+            "replacement_value_weight": ESPN_FITNESS_CONTRACT.replacement_value_weight,
+            "invalid_action_penalty": ESPN_FITNESS_CONTRACT.invalid_action_penalty,
+        }
+        active_unsupported = {
+            name: value for name, value in unsupported.items() if value != 0.0
+        }
+        if active_unsupported:
+            raise ValueError(
+                "CUDA fitness contract is incomplete for promotion: "
+                + ", ".join(active_unsupported)
+            )
 
     if selection_count < 1 or selection_count > population_size:
         raise ValueError("selection_count must be between one and population_size.")
     if not 0.0 <= immigrant_fraction < 1.0:
         raise ValueError("immigrant_fraction must be in [0, 1).")
+    if scenario_refresh_generations < 0:
+        raise ValueError("scenario_refresh_generations cannot be negative.")
+    if opponent_archive_size < 1:
+        raise ValueError("opponent_archive_size must be positive.")
+    if self_play_interval < 1:
+        raise ValueError("self_play_interval must be positive.")
+    if season_subsample_size < 0 or season_subsample_size > len(historical_states):
+        raise ValueError("season_subsample_size must be zero or within the training-state count.")
+    if season_replay_interval < 0:
+        raise ValueError("season_replay_interval cannot be negative.")
     rng = random.Random(seed)
     if resume_state is None:
         torch.manual_seed(seed)
@@ -695,7 +943,25 @@ def train_cuda_policy_population(
             mutate_policy(initial_policy, rng, mutation_strength, adapter_only=adapter_only)
         )
     best_policy = clone_policy(initial_policy)
-    opponent_archive = OpponentArchive() if self_play else None
+    opponent_archive = None
+    archive_restored = False
+    if self_play:
+        opponent_archive_state = (
+            None if resume_state is None else resume_state.get("opponent_archive")
+        )
+        if opponent_archive_state is not None:
+            opponent_archive = OpponentArchive.from_state_dict(
+                opponent_archive_state,
+                initial_policy,
+                next(initial_policy.parameters()).device,
+            )
+            archive_restored = True
+            if opponent_archive.max_size != opponent_archive_size:
+                raise ValueError(
+                    "Resume checkpoint opponent archive size does not match opponent_archive_size."
+                )
+        else:
+            opponent_archive = OpponentArchive(max_size=opponent_archive_size)
     best_risk_adjusted = float("-inf")
     metrics: list[CudaGenerationMetrics] = []
     start_generation = 1
@@ -723,42 +989,77 @@ def train_cuda_policy_population(
             torch.cuda.set_rng_state_all(resume_state["cuda_rng_state_all"])
         if len(population) != population_size:
             raise ValueError("Resume checkpoint population size does not match population_size.")
-    if opponent_archive is not None:
+    if opponent_archive is not None and not archive_restored:
         for index, policy in enumerate(population):
             opponent_archive.add(clone_policy(policy), label=f"initial-{index}")
+    active_scenario_generation = 1
+    if scenario_refresh_generations and start_generation > 1:
+        active_scenario_generation = (
+            ((start_generation - 1) // scenario_refresh_generations)
+            * scenario_refresh_generations
+            + 1
+        )
+        if active_scenario_generation > 1:
+            scenario_bank = prepare_cuda_scenario_bank(
+                historical_states,
+                scenario_repeats=scenario_repeats,
+                projection_noise=projection_noise,
+                seed=seed + active_scenario_generation * 100_000,
+            )
+    expected_scenario_digest = (
+        None if resume_state is None else resume_state.get("scenario_bank_digest")
+    )
+    if expected_scenario_digest is not None:
+        actual_scenario_digest = scenario_bank_digest(scenario_bank)
+        if actual_scenario_digest != expected_scenario_digest:
+            raise ValueError(
+                "Resume checkpoint scenario bank digest does not match reconstructed scenarios."
+            )
     started = perf_counter()
+    resumed_elapsed_seconds = metrics[-1].elapsed_seconds if metrics else 0.0
 
     for generation in range(start_generation, generations + 1):
-        if self_play:
+        active_states = historical_states
+        active_scenario_bank = scenario_bank
+        season_indices = list(range(len(historical_states)))
+        if season_subsample_size:
+            season_indices = select_training_season_indices(
+                len(historical_states),
+                season_subsample_size,
+                generation=generation,
+                replay_interval=season_replay_interval,
+            )
+            active_states = [historical_states[index] for index in season_indices]
+            active_scenario_bank = [scenario_bank[index] for index in season_indices]
+        if scenario_refresh_generations:
+            requested_scenario_generation = (
+                ((generation - 1) // scenario_refresh_generations)
+                * scenario_refresh_generations
+                + 1
+            )
+            if requested_scenario_generation != active_scenario_generation:
+                active_scenario_generation = requested_scenario_generation
+                scenario_bank = prepare_cuda_scenario_bank(
+                    historical_states,
+                    scenario_repeats=scenario_repeats,
+                    projection_noise=projection_noise,
+                    seed=seed + active_scenario_generation * 100_000,
+                )
+                active_scenario_bank = [scenario_bank[index] for index in season_indices]
+        run_self_play = self_play and generation % self_play_interval == 0
+        if run_self_play:
             archive_opponents = (
                 opponent_archive.sample(
-                    max(1, historical_states[0].team_count - 1),
+                    max(1, active_states[0].team_count - 1),
                     rng,
                 )
                 if opponent_archive is not None
                 else []
             )
-            evaluations = [
-                evaluate_cuda_policy(
-                    policy,
-                    historical_states,
-                    scenario_repeats=scenario_repeats,
-                    projection_noise=projection_noise,
-                    enable_transactions=enable_transactions,
-                    seed=seed + generation * 1000,
-                    draft_anchor_weight=draft_anchor_weight,
-                    risk_penalty=risk_penalty,
-                    compile_policy=compile_policy,
-                    scenario_bank=scenario_bank,
-                    opponent_policies=[*population, *archive_opponents],
-                )
-                for policy in population
-            ]
-        elif batch_population and next(population[0].parameters()).device.type == "cuda":
             evaluations = evaluate_cuda_policy_population(
                 population,
-                historical_states,
-                scenario_bank=scenario_bank,
+                active_states,
+                scenario_bank=active_scenario_bank,
                 scenario_repeats=scenario_repeats,
                 projection_noise=projection_noise,
                 enable_transactions=enable_transactions,
@@ -766,12 +1067,28 @@ def train_cuda_policy_population(
                 draft_anchor_weight=draft_anchor_weight,
                 risk_penalty=risk_penalty,
                 exact_policy_head_parity=exact_policy_head_parity,
+                compile_policy=compile_policy,
+                opponent_policies=archive_opponents,
+            )
+        elif batch_population and next(population[0].parameters()).device.type == "cuda":
+            evaluations = evaluate_cuda_policy_population(
+                population,
+                active_states,
+                scenario_bank=active_scenario_bank,
+                scenario_repeats=scenario_repeats,
+                projection_noise=projection_noise,
+                enable_transactions=enable_transactions,
+                seed=seed + generation * 1000,
+                draft_anchor_weight=draft_anchor_weight,
+                risk_penalty=risk_penalty,
+                exact_policy_head_parity=exact_policy_head_parity,
+                compile_policy=compile_policy,
             )
         else:
             evaluations = [
                 evaluate_cuda_policy(
                     policy,
-                    historical_states,
+                    active_states,
                     scenario_repeats=scenario_repeats,
                     projection_noise=projection_noise,
                     enable_transactions=enable_transactions,
@@ -795,7 +1112,12 @@ def train_cuda_policy_population(
         if best_evaluation.risk_adjusted_fitness > best_risk_adjusted:
             best_risk_adjusted = best_evaluation.risk_adjusted_fitness
             best_policy = clone_policy(generation_best)
-        elapsed = perf_counter() - started
+        next_strength = mutation_strength - (
+            (mutation_strength - final_mutation_strength)
+            * ((generation - 1) / max(generations - 1, 1))
+        )
+        diversity = policy_population_diversity(population, adapter_only=adapter_only)
+        elapsed = resumed_elapsed_seconds + perf_counter() - started
         generation_metrics = CudaGenerationMetrics(
             generation=generation,
             generations=generations,
@@ -811,6 +1133,8 @@ def train_cuda_policy_population(
             generations_per_hour=generation / max(elapsed / 3600.0, 1e-9),
             best_transaction_reward=best_evaluation.transaction_reward,
             best_lineup_efficiency=best_evaluation.lineup_efficiency,
+            population_diversity=diversity,
+            mutation_strength=next_strength,
         )
         metrics.append(generation_metrics)
         if opponent_archive is not None:
@@ -833,11 +1157,8 @@ def train_cuda_policy_population(
             generation_callback(generation_metrics, best_policy)
 
         selected = [policy for _, policy in ranked[:selection_count]]
-        next_strength = mutation_strength - (
-            (mutation_strength - final_mutation_strength)
-            * ((generation - 1) / max(generations - 1, 1))
-        )
-        population = [clone_policy(best_policy)]
+        population = [clone_policy(policy) for policy in selected[: min(2, len(selected))]]
+        adaptive_strength = next_strength * (1.25 if diversity < 1.0 else 1.0)
         while len(population) < population_size:
             first = rng.choice(selected)
             second = rng.choice(selected)
@@ -846,10 +1167,12 @@ def train_cuda_policy_population(
             else:
                 child = crossover_policy(first, second, rng, adapter_only=adapter_only)
             population.append(
-                mutate_policy(child, rng, next_strength, adapter_only=adapter_only)
+                mutate_policy(child, rng, adaptive_strength, adapter_only=adapter_only)
             )
         if checkpoint_callback is not None:
-            checkpoint_callback(generation, population, best_policy, metrics, rng)
+            if isinstance(run_manifest, dict):
+                run_manifest["scenario_bank_digest"] = scenario_bank_digest(active_scenario_bank)
+            checkpoint_callback(generation, population, best_policy, metrics, rng, opponent_archive)
 
     return best_policy, metrics
 
@@ -858,6 +1181,7 @@ def save_cuda_policy_checkpoint(
     policy: ModularManagerPolicyNetwork,
     output_path: Path,
     metrics: list[CudaGenerationMetrics],
+    run_manifest: dict | None = None,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_torch_save(
@@ -871,6 +1195,7 @@ def save_cuda_policy_checkpoint(
             "metrics": [item.to_dict() for item in metrics],
             "fitness_contract": ESPN_FITNESS_CONTRACT.to_dict(),
             "fitness_contract_digest": ESPN_FITNESS_CONTRACT.digest(),
+            "run_manifest": copy.deepcopy(run_manifest),
         },
         output_path,
     )
