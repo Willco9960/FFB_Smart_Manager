@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT
 from fantasy_engine.player import Player
 from fantasy_engine.team import Team
+from fantasy_engine.transaction_contract import canonical_player_key
 
 DECISION_TYPES = ("draft", "lineup", "waiver", "trade")
 
@@ -27,7 +28,11 @@ def _digest(payload: object) -> str:
 
 
 def player_key(player: Player) -> str:
-    return player.player_id or f"{player.name}|{player.position}|{player.team}"
+    return canonical_player_key(
+        player.player_id or player.name,
+        player.position,
+        player.team,
+    )
 
 
 @dataclass(frozen=True)

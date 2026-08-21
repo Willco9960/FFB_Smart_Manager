@@ -14,6 +14,12 @@ from dataclasses import dataclass, field
 import torch
 
 from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT, FitnessContract
+from fantasy_engine.transaction_contract import (
+    TransactionEvent,
+    canonical_trade_action_key,
+    canonical_transaction_state_digest,
+    canonical_waiver_action_key,
+)
 from gpu_sim.policy_draft import _build_player_features, run_batched_policy_draft
 from gpu_sim.tensorized_draft import (
     DraftBatchResult,
@@ -47,6 +53,11 @@ class CudaSeasonState:
     lineup_policy_gains: list[torch.Tensor] = field(default_factory=list)
     waiver_policy_gains: list[torch.Tensor] = field(default_factory=list)
     trade_policy_gains: list[torch.Tensor] = field(default_factory=list)
+    replacement_values: torch.Tensor | None = None
+    invalid_action_counts: torch.Tensor | None = None
+    transaction_events: list[list[TransactionEvent]] = field(default_factory=list)
+    transaction_impacts: list[list[dict[str, object]]] = field(default_factory=list)
+    player_identity_keys: tuple[str, ...] | None = None
     active_policy_network: torch.nn.Module | None = field(default=None, repr=False)
     active_team_policy_networks: list[torch.nn.Module] | None = field(default=None, repr=False)
     active_policy_team_indices: torch.Tensor | None = field(default=None, repr=False)
@@ -85,6 +96,238 @@ class CudaSeasonState:
         if self.active_team_policy_networks is not None:
             return self.active_team_policy_networks[team_index]
         return self.active_policy_network
+
+    def _transaction_state_digest(self, scenario: int) -> str:
+        rosters = self._require_rosters()[scenario].detach().cpu().tolist()
+        available = self.available[scenario].detach().cpu().tolist()
+        return canonical_transaction_state_digest(
+            team_rosters=[
+                (f"team-{team_index}", [self.player_identity_keys[player] for player in roster])
+                for team_index, roster in enumerate(rosters)
+            ],
+            available_player_keys=[
+                self.player_identity_keys[player]
+                for player, is_available in enumerate(available)
+                if is_available
+            ],
+            standings=[
+                (
+                    f"team-{team_index}",
+                    int(self.wins[scenario, team_index].item()),
+                    float(self.points_for[scenario, team_index].item()),
+                )
+                for team_index in range(self.team_count)
+            ],
+        )
+
+    def record_transaction_impacts(self, week: int) -> None:
+        """Record realized transaction value using the current week's points."""
+        if not self.transaction_impacts:
+            self.transaction_impacts = [[] for _ in range(self.scenario_count)]
+        for scenario, events in enumerate(self.transaction_events):
+            scenario_index = scenario
+            def reward_player_index(key: str, week_index: int, scenario_index: int) -> int:
+                if "|" not in key and key.isdigit():
+                    return int(key)
+                if "|" not in key:
+                    matches = [
+                        index
+                        for index, candidate in enumerate(self.player_identity_keys)
+                        if candidate.split("|", 1)[0] == key
+                    ]
+                    if len(matches) != 1:
+                        raise ValueError(f"Cannot attribute realized points for {key}")
+                    return matches[0]
+                player_id, position, _ = key.split("|", 2)
+                prefix = f"{player_id}|{position}|"
+                matches = [
+                    index
+                    for index, candidate in enumerate(self.player_identity_keys)
+                    if candidate.startswith(prefix)
+                ]
+                if not matches:
+                    raise ValueError(f"Cannot attribute realized points for {key}")
+                exact = next(
+                    (index for index in matches if self.player_identity_keys[index] == key),
+                    matches[0],
+                )
+                exact_value = float(
+                    self.weekly_actual_points[scenario_index, week_index, exact].item()
+                )
+                nonzero = [
+                    index
+                    for index in matches
+                    if float(self.weekly_actual_points[scenario_index, week_index, index].item())
+                    != 0.0
+                ]
+                return exact if exact_value != 0.0 else (nonzero[0] if nonzero else exact)
+
+            for event in events:
+                if not event.accepted or event.week > week:
+                    continue
+                keys = event.player_keys
+                if event.decision_type == "waiver":
+                    sides = [(event.team_name, (keys[0],), (keys[1],))]
+                elif event.decision_type == "trade":
+                    midpoint = len(keys) // 2
+                    offered = keys[:midpoint]
+                    requested = keys[midpoint:]
+                    counterparty = f"Team {event.counterparty_index + 1}"
+                    sides = [
+                        (event.team_name, requested, offered),
+                        (counterparty, offered, requested),
+                    ]
+                else:
+                    continue
+                for team_name, incoming, outgoing in sides:
+                    incoming_points = round(
+                        sum(
+                            float(
+                                self.weekly_actual_points[
+                                    scenario,
+                                    week - 1,
+                                    reward_player_index(key, week - 1, scenario_index),
+                                ].item()
+                            )
+                            for key in incoming
+                        ),
+                        2,
+                    )
+                    outgoing_points = round(
+                        sum(
+                            float(
+                                self.weekly_actual_points[
+                                    scenario,
+                                    week - 1,
+                                    reward_player_index(key, week - 1, scenario_index),
+                                ].item()
+                            )
+                            for key in outgoing
+                        ),
+                        2,
+                    )
+                    net_points = round(incoming_points - outgoing_points, 2)
+                    self.transaction_impacts[scenario].append(
+                        {
+                            "week": week,
+                            "transaction_type": event.decision_type,
+                            "team_name": team_name,
+                            "incoming_points": incoming_points,
+                            "outgoing_points": outgoing_points,
+                            "net_points": net_points,
+                            "reward": net_points,
+                        }
+                    )
+
+    def replay_transaction_events(self, events: list[TransactionEvent], scenario: int = 0) -> None:
+        """Replay canonical CPU transaction events sequentially for one scenario."""
+        if scenario < 0 or scenario >= self.scenario_count:
+            raise IndexError("scenario is outside the CUDA state batch")
+        rosters = self._require_rosters()
+        for event in sorted(events, key=lambda item: item.sequence_index):
+            current_digest = self._transaction_state_digest(scenario)
+            if event.pre_state_digest != current_digest:
+                raise ValueError(
+                    f"Transaction replay pre-state divergence at sequence "
+                    f"{event.sequence_index}: expected {event.pre_state_digest}, "
+                    f"got {current_digest}"
+                )
+            if not event.accepted:
+                if event.post_state_digest != current_digest:
+                    raise ValueError(
+                        f"Rejected transaction changed state at sequence {event.sequence_index}"
+                    )
+                self.transaction_events[scenario].append(event)
+                continue
+            parts = event.action_key.split("|")
+            if event.decision_type == "waiver":
+                if (not event.player_keys and len(parts) not in (4, 5)) or (
+                    event.player_keys and len(parts) < 2
+                ):
+                    raise ValueError("Malformed canonical waiver action key")
+                team_index = (
+                    event.team_index
+                    if event.team_index is not None
+                    else int(parts[1].removeprefix("team-"))
+                )
+                if event.player_keys:
+                    add_player = self.player_identity_keys.index(event.player_keys[0])
+                    drop_player = self.player_identity_keys.index(event.player_keys[1])
+                elif len(parts) == 4:
+                    add_player = int(parts[2])
+                    drop_player = int(parts[3])
+                else:
+                    add_player = int(parts[2].split("|", 1)[0])
+                    drop_player = int(parts[3].split("|", 1)[0])
+                roster = rosters[scenario, team_index].tolist()
+                if drop_player not in roster or not bool(self.available[scenario, add_player]):
+                    raise ValueError("Canonical waiver event is not legal in CUDA state")
+                roster.remove(drop_player)
+                roster.append(add_player)
+                rosters[scenario, team_index] = torch.tensor(
+                    roster, dtype=torch.long, device=self.device
+                )
+                self.available[scenario, add_player] = False
+                self.available[scenario, drop_player] = True
+            elif event.decision_type == "trade":
+                if (not event.player_keys and len(parts) != 5) or (
+                    event.player_keys and len(parts) < 3
+                ):
+                    raise ValueError("Malformed canonical trade action key")
+                proposer = event.team_index if event.team_index is not None else int(
+                    parts[1].removeprefix("team-")
+                )
+                counterparty = (
+                    event.counterparty_index
+                    if event.counterparty_index is not None
+                    else int(parts[2].removeprefix("team-"))
+                )
+                if event.player_keys:
+                    offered_keys = event.player_keys[: len(event.player_keys) // 2]
+                    requested_keys = event.player_keys[len(event.player_keys) // 2 :]
+                    offered = [self.player_identity_keys.index(key) for key in offered_keys]
+                    requested = [self.player_identity_keys.index(key) for key in requested_keys]
+                else:
+                    offered = [
+                        int(value.split("|", 1)[0])
+                        for value in parts[3].split(",")
+                        if value
+                    ]
+                    requested = [
+                        int(value.split("|", 1)[0])
+                        for value in parts[4].split(",")
+                        if value
+                    ]
+                if not offered or len(offered) != len(requested):
+                    raise ValueError("Canonical trade must exchange equally sized player sets")
+                proposer_roster = rosters[scenario, proposer].tolist()
+                counterparty_roster = rosters[scenario, counterparty].tolist()
+                if any(player not in proposer_roster for player in offered):
+                    raise ValueError("Canonical trade offered player is not owned")
+                if any(player not in counterparty_roster for player in requested):
+                    raise ValueError("Canonical trade requested player is not owned")
+                for player in offered:
+                    proposer_roster.remove(player)
+                    counterparty_roster.append(player)
+                for player in requested:
+                    counterparty_roster.remove(player)
+                    proposer_roster.append(player)
+                rosters[scenario, proposer] = torch.tensor(
+                    proposer_roster, dtype=torch.long, device=self.device
+                )
+                rosters[scenario, counterparty] = torch.tensor(
+                    counterparty_roster, dtype=torch.long, device=self.device
+                )
+            else:
+                raise ValueError(f"Unsupported transaction event: {event.decision_type}")
+            replayed_digest = self._transaction_state_digest(scenario)
+            if event.post_state_digest != replayed_digest:
+                raise ValueError(
+                    f"Transaction replay post-state divergence at sequence "
+                    f"{event.sequence_index}: expected {event.post_state_digest}, "
+                    f"got {replayed_digest}"
+                )
+            self.transaction_events[scenario].append(event)
 
     def __post_init__(self) -> None:
         if self.draft_projections.ndim != 2:
@@ -145,6 +388,16 @@ class CudaSeasonState:
             )
         if self.points_against is None:
             self.points_against = torch.zeros_like(self.points_for)
+        if self.replacement_values is None:
+            self.replacement_values = torch.zeros_like(self.points_for)
+        if self.invalid_action_counts is None:
+            self.invalid_action_counts = torch.zeros_like(self.wins)
+        if not self.transaction_events:
+            self.transaction_events = [[] for _ in range(self.scenario_count)]
+        if self.player_identity_keys is None:
+            self.player_identity_keys = tuple(str(index) for index in range(self.player_count))
+        if len(self.player_identity_keys) != self.player_count:
+            raise ValueError("player_identity_keys must describe every player")
 
     @property
     def device(self) -> torch.device:
@@ -458,12 +711,51 @@ class CudaSeasonState:
                 candidate_scores - current_scores >= minimum_improvement
             )
             old_players = current_rosters.gather(1, drop_slots.unsqueeze(1)).squeeze(1)
-            self._require_rosters()[
-                batch[accepted], team_indices[accepted], drop_slots[accepted]
-            ] = add_players[accepted]
+            pre_states = [
+                self._transaction_state_digest(index) for index in range(self.scenario_count)
+            ]
+            for scenario in torch.where(accepted)[0].tolist():
+                team_index = int(team_indices[scenario].item())
+                roster = self._require_rosters()[scenario, team_index].tolist()
+                roster.remove(int(old_players[scenario].item()))
+                roster.append(int(add_players[scenario].item()))
+                self._require_rosters()[scenario, team_index] = torch.tensor(
+                    roster, dtype=torch.long, device=self.device
+                )
             self.available[batch[accepted], add_players[accepted]] = False
             self.available[batch[accepted], old_players[accepted]] = True
+            for scenario in range(self.scenario_count):
+                self.transaction_events[scenario].append(
+                    TransactionEvent(
+                        season=0,
+                        week=week,
+                        sequence_index=len(self.transaction_events[scenario]),
+                        decision_type="waiver",
+                        team_name=f"team-{int(team_indices[scenario].item())}",
+                        action_key=canonical_waiver_action_key(
+                            f"team-{int(team_indices[scenario].item())}",
+                            str(int(add_players[scenario].item())),
+                            str(int(old_players[scenario].item())),
+                        ),
+                        pre_state_digest=pre_states[scenario],
+                        post_state_digest=self._transaction_state_digest(scenario),
+                        accepted=bool(accepted[scenario].item()),
+                        rejection_reason=(
+                            "no_legal_improvement" if not bool(accepted[scenario].item()) else ""
+                        ),
+                        player_keys=(
+                            self.player_identity_keys[int(add_players[scenario].item())],
+                            self.player_identity_keys[int(old_players[scenario].item())],
+                        ),
+                        team_index=int(team_indices[scenario].item()),
+                    )
+                )
             accepted_count += accepted.to(torch.int32)
+            self.invalid_action_counts.scatter_add_(
+                1,
+                team_indices.unsqueeze(1),
+                (~selected_valid).to(self.invalid_action_counts.dtype).unsqueeze(1),
+            )
             rank_gain = (candidate_scores - current_scores).clamp_min(0.0) * accepted
             if self.active_policy_team_indices is not None:
                 rank_gain = torch.where(
@@ -472,6 +764,11 @@ class CudaSeasonState:
                     torch.zeros_like(rank_gain),
                 )
             counterfactual_gain += rank_gain
+            self.replacement_values.scatter_add_(
+                1,
+                team_indices.unsqueeze(1),
+                rank_gain.unsqueeze(1),
+            )
 
         self.waiver_counts.append(accepted_count)
         if policy_network is not None:
@@ -615,8 +912,36 @@ class CudaSeasonState:
         batch = torch.arange(self.scenario_count, device=self.device)
         old_a = rosters[batch, best_a, best_slot_a].clone()
         old_b = rosters[batch, best_b, best_slot_b].clone()
+        pre_states = [self._transaction_state_digest(index) for index in range(self.scenario_count)]
         rosters[batch[accepted], best_a[accepted], best_slot_a[accepted]] = old_b[accepted]
         rosters[batch[accepted], best_b[accepted], best_slot_b[accepted]] = old_a[accepted]
+        for scenario in range(self.scenario_count):
+            event_accepted = bool(accepted[scenario].item())
+            self.transaction_events[scenario].append(
+                TransactionEvent(
+                    season=0,
+                    week=week,
+                    sequence_index=len(self.transaction_events[scenario]),
+                    decision_type="trade",
+                    team_name=f"team-{int(best_a[scenario].item())}",
+                    action_key=canonical_trade_action_key(
+                        f"team-{int(best_a[scenario].item())}",
+                        f"team-{int(best_b[scenario].item())}",
+                        [str(int(old_a[scenario].item()))],
+                        [str(int(old_b[scenario].item()))],
+                    ),
+                    pre_state_digest=pre_states[scenario],
+                    post_state_digest=self._transaction_state_digest(scenario),
+                    accepted=event_accepted,
+                    rejection_reason="no_mutually_beneficial_trade" if not event_accepted else "",
+                    player_keys=(
+                        self.player_identity_keys[int(old_a[scenario].item())],
+                        self.player_identity_keys[int(old_b[scenario].item())],
+                    ),
+                    team_index=int(best_a[scenario].item()),
+                    counterparty_index=int(best_b[scenario].item()),
+                )
+            )
         accepted_count = accepted.to(torch.int32)
         self.trade_counts.append(accepted_count)
         if policy_network is not None:
@@ -826,6 +1151,8 @@ def run_full_cuda_season(
     policy_team_indices: torch.Tensor | None = None,
     draft_anchor_weight: float = 0.20,
     fitness_contract: FitnessContract | None = None,
+    canonical_transaction_events: list[list[TransactionEvent]] | None = None,
+    initial_rosters: torch.Tensor | None = None,
 ) -> CudaSeasonState:
     """Execute draft, transactions, regular season, and playoffs.
 
@@ -873,19 +1200,44 @@ def run_full_cuda_season(
         state.active_team_policy_networks = None
         state.active_policy_team_indices = None
         state.active_policy_network = None
-    state.draft(
-        policy_network=policy_network
-        or (team_policy_networks[0] if team_policy_networks else None),
-        policy_team_indices=policy_team_indices,
-        draft_anchor_weight=draft_anchor_weight,
-    )
+    if initial_rosters is None:
+        state.draft(
+            policy_network=policy_network
+            or (team_policy_networks[0] if team_policy_networks else None),
+            policy_team_indices=policy_team_indices,
+            draft_anchor_weight=draft_anchor_weight,
+        )
+    else:
+        expected_shape = (state.scenario_count, state.team_count, state.roster_size)
+        if initial_rosters.shape != expected_shape:
+            raise ValueError(f"initial_rosters must have shape {expected_shape}")
+        initial_rosters = initial_rosters.to(device=state.device, dtype=torch.long)
+        if torch.any(initial_rosters < 0) or torch.any(initial_rosters >= state.player_count):
+            raise ValueError("initial_rosters contains an invalid player index")
+        state.rosters = initial_rosters.clone()
+        state.available.fill_(True)
+        state.available.scatter_(1, initial_rosters.reshape(state.scenario_count, -1), False)
     if team_policy_networks is None:
         state.active_policy_network = policy_network
     regular_season_weeks = min(14, state.week_count - 3)
+    if (
+        canonical_transaction_events is not None
+        and len(canonical_transaction_events) != state.scenario_count
+    ):
+        raise ValueError("canonical_transaction_events must contain one trace per scenario")
     for week in range(regular_season_weeks):
         if enable_transactions:
-            state.apply_trades(week, policy_network=policy_network)
-            state.apply_waivers(week, policy_network=policy_network)
+            if canonical_transaction_events is None:
+                state.apply_trades(week, policy_network=policy_network)
+                state.apply_waivers(week, policy_network=policy_network)
+            else:
+                for scenario, events in enumerate(canonical_transaction_events):
+                    state.replay_transaction_events(
+                        [event for event in events if event.week == week + 1],
+                        scenario=scenario,
+                    )
         state.score_week(week, policy_network=policy_network)
+        if enable_transactions:
+            state.record_transaction_impacts(week + 1)
     state.run_playoffs()
     return state

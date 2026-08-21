@@ -1,6 +1,7 @@
 """Deterministic transaction-action selection primitives shared by CPU/CUDA."""
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -84,6 +85,33 @@ def canonical_trade_action_key(
     return "trade|" + "|".join((proposer, counterparty, offered, requested))
 
 
+def canonical_transaction_state_digest(
+    *,
+    team_rosters: Sequence[tuple[str, Sequence[str]]],
+    available_player_keys: Sequence[str],
+    locked_team_names: Sequence[str] = (),
+    standings: Sequence[tuple[str, int, float]] = (),
+) -> str:
+    """Digest the complete sequential transaction state in backend-neutral form."""
+    payload = {
+        "team_rosters": tuple(
+            (str(team_name), tuple(str(player_key) for player_key in roster))
+            for team_name, roster in sorted(team_rosters, key=lambda item: str(item[0]))
+        ),
+        "available_player_keys": tuple(sorted(str(key) for key in available_player_keys)),
+        "locked_team_names": tuple(sorted(str(name) for name in locked_team_names)),
+        "standings": tuple(
+            # League reports publish hundredths; finer precision would turn
+            # harmless CUDA float32 accumulation noise into false divergence.
+            (str(team_name), int(wins), round(float(points_for), 2))
+            for team_name, wins, points_for in sorted(standings, key=lambda item: str(item[0]))
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class TransactionEvent:
     """Canonical trace record for one sequential transaction decision."""
@@ -99,6 +127,9 @@ class TransactionEvent:
     accepted: bool = True
     rejection_reason: str = ""
     reward_components: tuple[tuple[str, float], ...] = ()
+    player_keys: tuple[str, ...] = ()
+    team_index: int | None = None
+    counterparty_index: int | None = None
 
     def __post_init__(self) -> None:
         if self.decision_type not in ("waiver", "trade"):
@@ -121,7 +152,10 @@ class TransactionEvent:
             "accepted": self.accepted,
             "rejection_reason": self.rejection_reason,
             "reward_components": self.reward_components,
+            "player_keys": self.player_keys,
+            "team_index": self.team_index,
+            "counterparty_index": self.counterparty_index,
         }
-        return __import__("hashlib").sha256(
+        return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()

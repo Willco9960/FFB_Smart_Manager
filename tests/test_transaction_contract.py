@@ -4,6 +4,7 @@ import torch
 from fantasy_engine.transaction_contract import (
     TransactionEvent,
     canonical_trade_action_key,
+    canonical_transaction_state_digest,
     canonical_waiver_action_key,
     stable_argmax,
     stable_argmin,
@@ -75,6 +76,18 @@ def test_transaction_event_requires_rejection_reason_and_has_stable_digest():
             post_state_digest="after",
             accepted=False,
         )
+
+
+def test_transaction_state_digest_uses_published_score_precision():
+    base = {
+        "team_rosters": (("team-0", ("p0",)),),
+        "available_player_keys": ("p1",),
+        "standings": (("team-0", 1, 75.04),),
+    }
+
+    assert canonical_transaction_state_digest(**base) == canonical_transaction_state_digest(
+        **{**base, "standings": (("team-0", 1, 75.040009),)}
+    )
 
 
 def test_cuda_contract_stable_min_and_topk_match_cpu_order():

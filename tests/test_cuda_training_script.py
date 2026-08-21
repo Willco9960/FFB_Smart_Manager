@@ -27,6 +27,10 @@ def test_cuda_training_allows_zero_to_disable_holdout():
     validate_season_window(2021, 2024, 0)
 
 
+def test_cuda_training_manifest_can_disable_holdouts_with_zero_sentinel():
+    assert resolve_holdout_seasons(0, (0,)) == (0,)
+
+
 def test_cuda_training_rejects_negative_holdout():
     with pytest.raises(ValueError, match="zero or a positive"):
         validate_season_window(2021, 2024, -1)

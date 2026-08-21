@@ -77,6 +77,31 @@ def test_candidate_fitness_attribution_selects_routed_team_only():
     ])
 
 
+def test_candidate_fitness_applies_replacement_and_invalid_action_contract_terms():
+    state = create_synthetic_season_state(
+        scenarios=1,
+        players=160,
+        team_count=2,
+        weeks=17,
+        device=torch.device("cpu"),
+    )
+    state.wins.zero_()
+    state.points_for.zero_()
+    state.playoff_wins = torch.zeros_like(state.wins)
+    state.champions = torch.full((1,), -1, dtype=torch.long)
+    state.replacement_values[0, 0] = 20.0
+    state.invalid_action_counts[0, 0] = 1
+
+    fitness, *_ = _candidate_fitness(state, torch.tensor([0]))
+
+    expected = (
+        ESPN_FITNESS_CONTRACT.playoff_qualification_reward
+        + 20.0 * ESPN_FITNESS_CONTRACT.replacement_value_weight
+        - ESPN_FITNESS_CONTRACT.invalid_action_penalty
+    )
+    assert fitness.tolist() == pytest.approx([expected])
+
+
 def test_cuda_training_fails_closed_for_incomplete_transaction_contract():
     state = create_synthetic_season_state(
         scenarios=1,

@@ -113,6 +113,13 @@ def parse_args() -> argparse.Namespace:
         help="Multiple chronological unseen seasons evaluated independently.",
     )
     parser.add_argument(
+        "--validation-seasons",
+        type=int,
+        nargs="*",
+        default=(),
+        help="Chronological training-only validation seasons excluded from optimization.",
+    )
+    parser.add_argument(
         "--self-play",
         action="store_true",
         help="Evaluate candidates against a frozen population/opponent archive.",
@@ -450,7 +457,8 @@ def build_run_manifest(
     """Capture data and search identity needed for an auditable resume."""
     data_seasons = set(range(args.start_season - 1, args.end_season + 1))
     for holdout_season in args.holdout_seasons:
-        data_seasons.update((holdout_season - 1, holdout_season))
+        if holdout_season > 0:
+            data_seasons.update((holdout_season - 1, holdout_season))
     data_files = {}
     for season in sorted(data_seasons):
         path = get_player_stats_raw_path(season)
@@ -475,7 +483,12 @@ def build_run_manifest(
         ),
         "preflight": preflight_summary,
         "parity_evidence": parity_evidence,
-        "training_seasons": list(range(args.start_season, args.end_season + 1)),
+        "training_seasons": [
+            season
+            for season in range(args.start_season, args.end_season + 1)
+            if season not in set(getattr(args, "validation_seasons", ()))
+        ],
+        "validation_seasons": list(getattr(args, "validation_seasons", ())),
         "holdout_seasons": list(args.holdout_seasons),
         "holdout_season": args.holdout_seasons[0] if len(args.holdout_seasons) == 1 else 0,
         "data_files": data_files,
@@ -512,7 +525,12 @@ def build_run_manifest(
 
 
 def load_historical_states(args: argparse.Namespace, device: torch.device):
-    seasons = list(range(args.start_season, args.end_season + 1))
+    validation_seasons = set(getattr(args, "validation_seasons", ()))
+    seasons = [
+        season
+        for season in range(args.start_season, args.end_season + 1)
+        if season not in validation_seasons
+    ]
 
     def load(season: int):
         return create_historical_cuda_inputs(
@@ -539,6 +557,21 @@ def load_holdout_states(args: argparse.Namespace, device: torch.device):
             ).state,
         )
         for season in args.holdout_seasons
+        if season > 0
+    ]
+
+
+def load_validation_states(args: argparse.Namespace, device: torch.device):
+    return [
+        (
+            season,
+            create_historical_cuda_inputs(
+                season=season,
+                players=args.players,
+                device=device,
+            ).state,
+        )
+        for season in getattr(args, "validation_seasons", ())
     ]
 
 
@@ -618,6 +651,10 @@ def main() -> None:
         args.holdout_season,
         args.holdout_seasons,
     )
+    args.validation_seasons = tuple(sorted(set(args.validation_seasons)))
+    overlap = set(args.validation_seasons) & set(args.holdout_seasons)
+    if overlap:
+        raise ValueError(f"Validation and holdout seasons overlap: {sorted(overlap)}")
     validate_season_window(args.start_season, args.end_season, args.holdout_seasons)
     validate_player_count(args.players)
     validate_opponent_archive_size(args.opponent_archive_size)
@@ -662,7 +699,11 @@ def main() -> None:
             _sha256_file(args.initial_policy) if args.initial_policy.exists() else None
         ),
     )
-    training_seasons = tuple(range(args.start_season, args.end_season + 1))
+    training_seasons = tuple(
+        season
+        for season in range(args.start_season, args.end_season + 1)
+        if season not in set(args.validation_seasons)
+    )
     print("Running mandatory historical preflight...", flush=True)
     preflight = run_training_preflight(training_seasons, device="cpu")
     preflight_summary = {
@@ -682,6 +723,9 @@ def main() -> None:
         raise RuntimeError(f"CUDA training preflight failed: {preflight_summary}")
 
     if args.from_scratch:
+        torch.manual_seed(args.seed)
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(args.seed)
         initial_policy = ModularManagerPolicyNetwork(hidden_size=args.hidden_size or 128)
     elif args.initial_policy.exists():
         initial_policy = load_modular_policy_network(args.initial_policy)
@@ -716,6 +760,7 @@ def main() -> None:
     )
     print("Loading historical CUDA states...", flush=True)
     states = load_historical_states(args, device)
+    validation_states = load_validation_states(args, device)
     holdout_states = load_holdout_states(args, device)
     resume_state = None
     if args.resume is not None:
@@ -875,6 +920,35 @@ def main() -> None:
             final_metric.best_risk_adjusted_fitness - best_metric.best_risk_adjusted_fitness
         ),
     }
+    if validation_states:
+        from gpu_sim.policy_training import evaluate_cuda_policy
+
+        validation_reports = []
+        for validation_index, (season, validation_state) in enumerate(validation_states):
+            evaluation_kwargs = {
+                "scenario_repeats": max(args.scenario_repeats, 8),
+                "projection_noise": args.projection_noise,
+                "enable_transactions": not args.disable_transactions,
+                "seed": args.seed + 700_000 + validation_index * 10_000,
+                "draft_anchor_weight": args.draft_anchor_weight,
+                "risk_penalty": args.risk_penalty,
+                "compile_policy": args.compile_policy,
+            }
+            candidate = evaluate_cuda_policy(best_policy, [validation_state], **evaluation_kwargs)
+            initial = evaluate_cuda_policy(initial_policy, [validation_state], **evaluation_kwargs)
+            projection = evaluate_cuda_policy(None, [validation_state], **evaluation_kwargs)
+            validation_reports.append(
+                {
+                    "season": season,
+                    "candidate": evaluation_to_dict(candidate),
+                    "initial_policy": evaluation_to_dict(initial),
+                    "projection_baseline": evaluation_to_dict(projection),
+                    "candidate_delta_vs_initial": candidate.fitness - initial.fitness,
+                    "candidate_delta_vs_projection": candidate.fitness - projection.fitness,
+                    "training_only": True,
+                }
+            )
+        report["validation"] = validation_reports
     if holdout_states:
         from gpu_sim.policy_training import evaluate_cuda_policy
 

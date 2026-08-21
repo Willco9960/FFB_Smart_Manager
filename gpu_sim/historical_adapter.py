@@ -15,6 +15,7 @@ import torch
 from fantasy_engine.historical_loader import RAW_DATA_DIR, load_player_stats
 from fantasy_engine.leakage_safe_player_pool import load_leakage_safe_player_pool
 from fantasy_engine.player import Player
+from fantasy_engine.transaction_contract import canonical_player_key
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance, load_weekly_performances
 from fantasy_engine.weekly_projection import calculate_weekly_projection
 from gpu_sim.full_season import CudaSeasonState
@@ -141,6 +142,14 @@ def create_historical_cuda_inputs(
         positions=position_ids.to(device),
         lineup_position_rules=(
             (0,), (1,), (1,), (2,), (2,), (3,), (1, 2, 3), (4,), (5,)
+        ),
+        player_identity_keys=tuple(
+            canonical_player_key(
+                getattr(player, "player_id", None) or player.name,
+                player.position,
+                player.team,
+            )
+            for player in player_pool
         ),
     )
     return HistoricalCudaInputs(

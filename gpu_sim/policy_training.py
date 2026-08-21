@@ -204,6 +204,7 @@ def clone_cuda_state(
         draft_boom_probabilities=None
         if state.draft_boom_probabilities is None
         else state.draft_boom_probabilities.repeat(scenario_repeats, 1),
+        player_identity_keys=state.player_identity_keys,
     )
 
 
@@ -232,6 +233,7 @@ def fork_cuda_state(
         draft_boom_probabilities=None
         if state.draft_boom_probabilities is None
         else state.draft_boom_probabilities.clone(),
+        player_identity_keys=state.player_identity_keys,
     )
 
 
@@ -300,6 +302,10 @@ def _candidate_fitness(
             torch.arange(state.scenario_count, device=state.device),
             candidate_team_indices,
         ]
+    replacement_value = state.replacement_values[batch, candidate_team_indices]
+    invalid_actions = state.invalid_action_counts[batch, candidate_team_indices].to(
+        points_for.dtype
+    )
     fitness = (
         wins * contract.weekly_win_reward
         + points_for * contract.points_for_weight
@@ -308,6 +314,8 @@ def _candidate_fitness(
         + champion * contract.championship_reward
         + transaction_reward * contract.transaction_reward_weight
         + lineup_efficiency * contract.lineup_efficiency_weight
+        + replacement_value * contract.replacement_value_weight
+        - invalid_actions * contract.invalid_action_penalty
     )
     return fitness, wins, points_for, playoff_qualified, champion
 

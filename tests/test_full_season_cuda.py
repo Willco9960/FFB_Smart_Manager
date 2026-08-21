@@ -90,6 +90,21 @@ def test_full_cuda_season_pipeline_runs_end_to_end():
     assert result.champions is not None
 
 
+def test_full_cuda_season_can_bypass_draft_with_authoritative_rosters():
+    state = create_synthetic_season_state(scenarios=1, players=200)
+    drafted = state.draft().player_indices.clone()
+    replay_state = create_synthetic_season_state(scenarios=1, players=200)
+
+    run_full_cuda_season(
+        replay_state,
+        enable_transactions=False,
+        initial_rosters=drafted,
+    )
+
+    assert torch.equal(replay_state.rosters, drafted)
+    assert not replay_state.available.gather(1, drafted.reshape(1, -1)).any()
+
+
 def test_policy_controlled_full_season_records_all_in_season_heads():
     state = create_synthetic_season_state(scenarios=1, players=200)
 

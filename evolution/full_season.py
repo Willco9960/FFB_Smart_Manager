@@ -214,12 +214,21 @@ def evaluate_full_season_battle_royale(
         )
         ranked_standings = rank_standings(regular_season.standings)
         transaction_rewards = {}
+        replacement_values = {}
 
         for impacts in regular_season.weekly_transaction_impacts.values():
             for impact in impacts:
                 transaction_rewards[impact.team_name] = (
                     transaction_rewards.get(impact.team_name, 0.0) + impact.reward
                 )
+                replacement_values[impact.team_name] = (
+                    replacement_values.get(impact.team_name, 0.0)
+                    + max(impact.net_points, 0.0)
+                )
+        invalid_actions = {}
+        for event in regular_season.transaction_events:
+            if not event.accepted:
+                invalid_actions[event.team_name] = invalid_actions.get(event.team_name, 0) + 1
 
         for team, agent in zip(simulated_league.teams, agent_group, strict=True):
             agent_genome = getattr(agent, "genome", None) or fallback_genome
@@ -233,6 +242,8 @@ def evaluate_full_season_battle_royale(
             playoff_wins = count_playoff_wins(playoff_seed, playoff_result)
             champion = playoff_result.champion.name == team.name
             transaction_reward = round(transaction_rewards.get(team.name, 0.0), 2)
+            replacement_value = round(replacement_values.get(team.name, 0.0), 2)
+            invalid_action_count = invalid_actions.get(team.name, 0)
             fitness_score = calculate_full_season_fitness(
                 regular_season_wins=standing.wins,
                 points_for=standing.points_for,
@@ -244,6 +255,8 @@ def evaluate_full_season_battle_royale(
                 playoff_wins=playoff_wins,
                 champion=champion,
                 transaction_reward=transaction_reward,
+                replacement_value=replacement_value,
+                invalid_actions=invalid_action_count,
                 contract=fitness_contract or ESPN_FITNESS_CONTRACT,
             )
             evaluated_agents.append(

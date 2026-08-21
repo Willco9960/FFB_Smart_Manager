@@ -7,7 +7,7 @@ from evolution.offline_replay import DecisionReplayRecord
 from fantasy_engine.fitness_contract import ESPN_FITNESS_CONTRACT, FitnessContract
 from fantasy_engine.league import League
 from fantasy_engine.lineup import ESPN_OFFENSIVE_LINEUP_RULES, LineupSlot
-from fantasy_engine.manager_transition import build_manager_state
+from fantasy_engine.manager_transition import build_manager_state, player_key
 from fantasy_engine.season import (
     ESPN_TEN_TEAM_DEFAULT_RULES,
     ESPNLeagueRules,
@@ -18,14 +18,21 @@ from fantasy_engine.season import (
     rank_standings,
 )
 from fantasy_engine.team import Team
+from fantasy_engine.transaction_contract import (
+    TransactionEvent,
+    canonical_trade_action_key,
+    canonical_transaction_state_digest,
+    canonical_waiver_action_key,
+)
 from fantasy_engine.transactions import (
     Transaction,
     TransactionImpact,
+    TransactionResult,
     TransactionValueTracker,
     apply_trade,
+    apply_waiver_claim,
     create_inverse_standings_waiver_order,
     format_transactions,
-    process_waiver_claims,
 )
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_projection import create_weekly_projected_roster
@@ -44,6 +51,7 @@ class RegularSeasonSimulationResult:
     weekly_transactions: dict[int, list[Transaction]]
     weekly_transaction_impacts: dict[int, list[TransactionImpact]]
     decision_replay_records: list[DecisionReplayRecord] = field(default_factory=list)
+    transaction_events: list[TransactionEvent] = field(default_factory=list)
 
     def ranked_standings(self) -> list[TeamStanding]:
         return rank_standings(self.standings)
@@ -70,6 +78,7 @@ def run_historical_regular_season(
     weekly_transaction_impacts = {}
     transaction_tracker = TransactionValueTracker()
     decision_replay_records: list[DecisionReplayRecord] = []
+    transaction_events: list[TransactionEvent] = []
 
     for week in range(1, rules.regular_season_weeks + 1):
         weekly_transactions[week] = run_weekly_trades(
@@ -82,6 +91,7 @@ def run_historical_regular_season(
             replay_records=decision_replay_records,
             season=season,
             contract_digest=fitness_contract.digest(),
+            transaction_events=transaction_events,
         )
         weekly_transactions[week].extend(
             run_weekly_waivers(
@@ -94,6 +104,7 @@ def run_historical_regular_season(
                 replay_records=decision_replay_records,
                 season=season,
                 contract_digest=fitness_contract.digest(),
+                transaction_events=transaction_events,
             )
         )
         transaction_tracker.register(weekly_transactions[week])
@@ -140,6 +151,26 @@ def run_historical_regular_season(
         weekly_transactions=weekly_transactions,
         weekly_transaction_impacts=weekly_transaction_impacts,
         decision_replay_records=decision_replay_records,
+        transaction_events=transaction_events,
+    )
+
+
+def _transaction_state_digest(league: League, standings: dict[str, TeamStanding]) -> str:
+    team_indices = {team.name: index for index, team in enumerate(league.teams)}
+    return canonical_transaction_state_digest(
+        team_rosters=[
+            (f"team-{index}", [player_key(player) for player in team.roster])
+            for index, team in enumerate(league.teams)
+        ],
+        available_player_keys=[player_key(player) for player in league.available_players],
+        standings=[
+            (
+                f"team-{team_indices[name]}",
+                standing.wins,
+                standing.points_for,
+            )
+            for name, standing in standings.items()
+        ],
     )
 
 
@@ -181,6 +212,7 @@ def run_weekly_waivers(
     replay_records: list[DecisionReplayRecord] | None = None,
     season: int = 0,
     contract_digest: str = ESPN_FITNESS_CONTRACT.digest(),
+    transaction_events: list[TransactionEvent] | None = None,
 ) -> list[Transaction]:
     if waiver_agents is None:
         return []
@@ -284,7 +316,50 @@ def run_weekly_waivers(
         )
 
     waiver_order = create_inverse_standings_waiver_order(standings)
-    result = process_waiver_claims(league, claims, waiver_order)
+    result = TransactionResult()
+    claims_by_team = {claim.team_name: claim for claim in claims}
+    for team_name in waiver_order:
+        claim = claims_by_team.get(team_name)
+        if claim is None:
+            continue
+        pre_state = _transaction_state_digest(league, standings)
+        accepted = True
+        rejection_reason = ""
+        try:
+            transaction = apply_waiver_claim(league, claim)
+        except ValueError as error:
+            accepted = False
+            rejection_reason = str(error)
+            result.rejected_claims.append(claim)
+        else:
+            result.processed_claims.append(claim)
+            result.transactions.append(transaction)
+        post_state = _transaction_state_digest(league, standings)
+        if transaction_events is not None:
+            transaction_events.append(
+                TransactionEvent(
+                    season=season,
+                    week=week,
+                    sequence_index=len(transaction_events),
+                    decision_type="waiver",
+                    team_name=claim.team_name,
+                    action_key=canonical_waiver_action_key(
+                        claim.team_name,
+                        player_key(claim.add_player),
+                        player_key(claim.drop_player),
+                    ),
+                    pre_state_digest=pre_state,
+                    post_state_digest=post_state,
+                    accepted=accepted,
+                    rejection_reason=rejection_reason,
+                    player_keys=(player_key(claim.add_player), player_key(claim.drop_player)),
+                    team_index=next(
+                        index
+                        for index, team in enumerate(league.teams)
+                        if team.name == claim.team_name
+                    ),
+                )
+            )
 
     if replay_records is not None:
         processed_keys = {
@@ -315,6 +390,7 @@ def run_weekly_trades(
     replay_records: list[DecisionReplayRecord] | None = None,
     season: int = 0,
     contract_digest: str = ESPN_FITNESS_CONTRACT.digest(),
+    transaction_events: list[TransactionEvent] | None = None,
 ) -> list[Transaction]:
     if trade_agents is None:
         return []
@@ -436,7 +512,41 @@ def run_weekly_trades(
             offered_players=original_offered_players,
             requested_players=original_requested_players,
         )
+        pre_state = _transaction_state_digest(league, standings)
         transactions.append(apply_trade(league, proposal))
+        post_state = _transaction_state_digest(league, standings)
+        if transaction_events is not None:
+            transaction_events.append(
+                TransactionEvent(
+                    season=season,
+                    week=week,
+                    sequence_index=len(transaction_events),
+                    decision_type="trade",
+                    team_name=proposal.proposing_team_name,
+                    action_key=canonical_trade_action_key(
+                        proposal.proposing_team_name,
+                        proposal.receiving_team_name,
+                        [player_key(player) for player in proposal.offered_players],
+                        [player_key(player) for player in proposal.requested_players],
+                    ),
+                    pre_state_digest=pre_state,
+                    post_state_digest=post_state,
+                    player_keys=tuple(
+                        [player_key(player) for player in proposal.offered_players]
+                        + [player_key(player) for player in proposal.requested_players]
+                    ),
+                    team_index=next(
+                        index
+                        for index, team in enumerate(league.teams)
+                        if team.name == proposal.proposing_team_name
+                    ),
+                    counterparty_index=next(
+                        index
+                        for index, team in enumerate(league.teams)
+                        if team.name == proposal.receiving_team_name
+                    ),
+                )
+            )
         traded_team_names.add(proposal.proposing_team_name)
         traded_team_names.add(proposal.receiving_team_name)
 

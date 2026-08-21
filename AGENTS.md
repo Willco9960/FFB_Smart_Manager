@@ -67,6 +67,12 @@ The project’s ESPN-style defaults are 10 teams, 14 regular-season weeks, six p
 
 ## Verification checklist
 
+Before declaring a run complete or starting another overnight run, reconcile
+the authoritative second-brain ledger at
+`E:\Codex_Brain\02 - Projects\FFB Manager Overnight Run To-Do.md`. Every item
+must be completed and verified; an unchecked item is a hard stop. Items may be
+removed only after implementation plus focused/full/runtime evidence is recorded.
+
 Before committing:
 
 ```powershell

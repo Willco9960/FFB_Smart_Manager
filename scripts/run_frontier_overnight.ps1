@@ -12,12 +12,15 @@ param(
     [int]$Players = 256,
     [switch]$SelfPlay,
     [switch]$FullPolicyMutation,
+    [switch]$BatchedPolicyHeads,
+    [switch]$Deterministic,
     [switch]$CompilePolicy,
     [ValidateSet("promotion", "exploratory-draft")]
     [string]$RunMode = "promotion",
     [string]$RunId = (Get-Date -Format "yyyyMMdd_HHmmss"),
     [int]$OpponentArchiveSize = 64,
     [string]$MultiSeedReport = "reports\multi_seed_final_architecture_calibration.json",
+    [string]$ParityReport = "reports\parity_transactions_pipeline_rewardfixed_20260820.json",
     [int]$MaxGpuUtilization = 25,
     [int]$MaxGpuMemoryMiB = 3000,
     [int]$MaxGpuTemperatureC = 80
@@ -26,6 +29,17 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+
+function Stop-ProcessTree {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) {
+        return
+    }
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -ne $process) {
+        & taskkill.exe /PID $ProcessId /T /F | Out-Null
+    }
+}
 
 $python = Join-Path $repo ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python)) {
@@ -81,11 +95,7 @@ foreach ($path in @($output, $checkpoint, $report)) {
     }
 }
 
-if ($RunMode -eq "promotion") {
-    $parityReport = Join-Path $repo "reports\cpu_cuda_parity_2023_cpu_transactions.json"
-} else {
-    $parityReport = Join-Path $repo "reports\cpu_cuda_parity_2023_cpu.json"
-}
+$parityReport = Join-Path $repo $ParityReport
 
 if ($RunMode -eq "promotion") {
     if (-not (Test-Path -LiteralPath $parityReport)) {
@@ -93,15 +103,15 @@ if ($RunMode -eq "promotion") {
     }
     $parity = Get-Content -LiteralPath $parityReport -Raw | ConvertFrom-Json
     foreach ($field in @(
-        "exact_standings_match",
-        "exact_champion_match",
-        "exact_weekly_score_match",
-        "transaction_actions_exact",
-        "transaction_state_exact",
-        "transaction_reward_exact"
+        "exact_standings_match_count",
+        "exact_champion_match_count",
+        "exact_weekly_score_match_count",
+        "transaction_actions_exact_count",
+        "transaction_state_exact_count",
+        "transaction_reward_exact_count"
     )) {
-        if (-not [bool]$parity.$field) {
-            throw "Promotion parity report is not exact: $field=$($parity.$field)"
+        if ([int]$parity.$field -lt 4) {
+            throw "Promotion parity report is not exact across 2021-2024: $field=$($parity.$field)"
         }
     }
     if (-not [bool]$parity.transactions) {
@@ -134,7 +144,6 @@ $arguments = @(
     "--scenario-repeats", $ScenarioRepeats,
     "--projection-noise", "0.015",
     "--loader-workers", "1",
-    "--deterministic",
     "--scenario-refresh-generations", $ScenarioRefreshGenerations,
     "--season-subsample-size", $SeasonSubsampleSize,
     "--season-replay-interval", $SeasonReplayInterval,
@@ -142,11 +151,7 @@ $arguments = @(
     "--players", $Players,
     "--holdout-season", "0",
     "--holdout-seasons", "2024", "2025",
-    "--parity-report", $parityReport,
-    "--require-promotion-ready",
     "--opponent-archive-size", $OpponentArchiveSize,
-    "--multi-seed-report", $MultiSeedReport,
-    "--require-multi-seed-promotion",
     "--output", $output,
     "--checkpoint", $checkpoint,
     "--report", $report
@@ -160,12 +165,29 @@ if ($FullPolicyMutation) {
     $arguments += "--full-policy-mutation"
 }
 
+if ($BatchedPolicyHeads) {
+    $arguments += "--batched-policy-heads"
+}
+
+if ($Deterministic) {
+    $arguments += "--deterministic"
+}
+
 if ($CompilePolicy) {
     $arguments += "--compile-policy"
 }
 
 if ($RunMode -eq "exploratory-draft") {
     $arguments += "--disable-transactions"
+}
+
+if ($RunMode -eq "promotion") {
+    $arguments += @(
+        "--parity-report", $parityReport,
+        "--require-promotion-ready",
+        "--multi-seed-report", $MultiSeedReport,
+        "--require-multi-seed-promotion"
+    )
 }
 
 Write-Host "Starting frontier overnight run from $repo"
@@ -175,9 +197,30 @@ Write-Host ("Training seasons: {0}-{1}; holdouts: 2024, 2025; population: {2}; g
 Write-Host ("Self-play: {0}; transactions: {1}; separate output: {2}" -f `
     $SelfPlay.IsPresent, ($RunMode -eq "promotion"), $output)
 
-& $python @arguments
-if ($LASTEXITCODE -ne 0) {
-    throw "Frontier overnight run failed with exit code $LASTEXITCODE"
+$child = $null
+try {
+    $child = Start-Process -FilePath $python -ArgumentList $arguments -NoNewWindow -PassThru
+    $child.WaitForExit()
+    $exitCode = $child.ExitCode
+    if ($null -eq $exitCode) {
+        # Windows can expose a null ExitCode after WaitForExit when the
+        # process has already been reaped.  The report is authoritative for
+        # this wrapper's post-run status in that case.
+        if (Test-Path -LiteralPath $report) {
+            $completed = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+            if ($completed.status -eq "complete") {
+                $exitCode = 0
+            }
+        }
+    }
+    if ($exitCode -ne 0) {
+        throw "Frontier overnight run failed with exit code $exitCode"
+    }
+}
+finally {
+    if ($null -ne $child) {
+        Stop-ProcessTree -ProcessId $child.Id
+    }
 }
 
 Write-Host "Frontier overnight run completed. Inspect $report before any promotion decision."

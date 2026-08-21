@@ -1,14 +1,16 @@
 from evolution.offline_replay import DecisionReplayRecord
 from fantasy_engine.league import League
 from fantasy_engine.player import Player
+from fantasy_engine.season import initialize_standings
 from fantasy_engine.team import Team
-from fantasy_engine.transactions import TransactionImpact
+from fantasy_engine.transactions import TransactionImpact, WaiverClaim
 from fantasy_engine.weekly_data import WeeklyPlayerPerformance
 from fantasy_engine.weekly_season_simulation import (
     apply_transaction_rewards,
     format_final_standings,
     format_week_by_week_report,
     run_historical_regular_season,
+    run_weekly_waivers,
 )
 from models.modular_manager_policy import create_modular_policy_features
 
@@ -49,6 +51,40 @@ def create_performances(teams: list[Team]) -> list[WeeklyPlayerPerformance]:
                 )
 
     return performances
+
+
+class FixedWaiverAgent:
+    def choose_waiver_claim(self, team, available_players, league, week):
+        return WaiverClaim(
+            team_name=team.name,
+            add_player=available_players[0],
+            drop_player=team.roster[0],
+            week=week,
+        )
+
+
+def test_cpu_transaction_events_capture_sequential_waiver_state_transition():
+    team = create_complete_team(1)
+    added = Player(name="Free Agent", position="WR", team="ATL", projected_score=20.0)
+    league = League(name="Trace League", teams=[team], available_players=[added])
+    standings = initialize_standings([team.name])
+    events = []
+
+    transactions = run_weekly_waivers(
+        league=league,
+        standings=standings,
+        performances=[],
+        week=1,
+        waiver_agents={team.name: FixedWaiverAgent()},
+        season=2021,
+        transaction_events=events,
+    )
+
+    assert len(transactions) == 1
+    assert len(events) == 1
+    assert events[0].accepted is True
+    assert events[0].pre_state_digest != events[0].post_state_digest
+    assert events[0].action_key.startswith("waiver|")
 
 
 def test_run_historical_regular_season_simulates_fourteen_weeks():
